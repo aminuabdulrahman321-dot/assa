@@ -1,0 +1,83 @@
+name: assa
+description: AFIT Shuttle Service App - Professional shuttle management for AFIT community.
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Firebase
+  firebase_core: ^2.27.1
+  firebase_auth: ^4.17.9
+  firebase_messaging: ^14.9.4
+  flutter_local_notifications: ^17.2.2
+  cloud_firestore: ^4.15.9
+  firebase_storage: ^11.6.10
+
+  # Google Sign-In
+  google_sign_in: ^6.2.1
+
+  # State Management
+  provider: ^6.1.2
+
+  # Navigation
+  go_router: ^13.2.1
+
+  # Network & Connectivity
+  connectivity_plus: ^5.0.2
+
+  # Image Handling
+  image_picker: ^1.1.2
+  cached_network_image: ^3.3.1
+
+  # Utilities
+  intl: ^0.19.0
+  uuid: ^4.3.3
+  shared_preferences: ^2.2.3
+
+  # Security
+  crypto: ^3.0.3
+
+  # URL Launcher
+  url_launcher: ^6.2.6
+
+
+
+  # UI
+  shimmer: ^3.0.0
+  google_fonts: ^6.2.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+  flutter_launcher_icons: ^0.14.4
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/images/
+    - assets/icons/
+    - assets/animations/
+  fonts:
+    - family: Poppins
+      fonts:
+        - asset: assets/fonts/Poppins-Regular.ttf
+        - asset: assets/fonts/Poppins-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/Poppins-SemiBold.ttf
+          weight: 600
+        - asset: assets/fonts/Poppins-Bold.ttf
+          weight: 700
+
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: "assets/icons/app_icon.png"
+  min_sdk_android: 21
+  adaptive_icon_background: "#1A237E"
+  adaptive_icon_foreground: "assets/icons/app_icon.png"

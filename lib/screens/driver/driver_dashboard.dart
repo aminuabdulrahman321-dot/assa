@@ -1,0 +1,844 @@
+import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:assa/core/constants/app_colors.dart';
+import 'package:assa/core/utils/helpers.dart';
+import 'package:assa/services/auth_service.dart';
+import 'package:assa/services/esp32_service.dart';
+import 'package:assa/widgets/common/common_widgets.dart';
+import 'package:assa/screens/auth/login_screen.dart';
+import 'package:assa/screens/user/puzzle_screen.dart';
+import 'package:assa/screens/user/lost_found_screen.dart';
+import 'package:assa/screens/user/notifications_screen.dart';
+
+// ======================================================================
+// DRIVER DASHBOARD
+//
+// Reads live from Firebase:
+//   users/{uid}           — driver profile + shuttleId
+//   ride_requests         — passengers assigned to this driver's shuttleId
+//
+// Driver can:
+//   • See all passengers assigned to their shuttle
+//   • Update each passenger's ride status (Assigned → Arriving → Picked Up
+//     → Completed / Cancelled)
+//   • Send arrival alert notification to all passengers on current route
+//   • Filter passengers by status
+// ======================================================================
+
+class DriverDashboard extends StatefulWidget {
+  const DriverDashboard({super.key});
+  @override
+  State<DriverDashboard> createState() => _DriverDashboardState();
+}
+
+class _DriverDashboardState extends State<DriverDashboard> {
+  final _auth = AuthService();
+  Map<String, dynamic>? _driverData;
+  bool _isLoading      = true;
+  int  _unreadNotifs   = 0;
+  String _statusFilter = 'Active'; // Active | All | Completed
+
+  @override
+  void initState() {
+    super.initState();
+    _loadDriverData();
+  }
+
+  Future<void> _loadDriverData() async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+    try {
+      final doc = await FirebaseFirestore.instance
+          .collection('users').doc(uid).get();
+      if (mounted) setState(() {
+        _driverData = doc.data();
+        _isLoading  = false;
+      });
+      _listenToNotifications(uid);
+    } catch (_) {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  void _listenToNotifications(String uid) {
+    FirebaseFirestore.instance
+        .collection('notifications')
+        .where('userId',  isEqualTo: uid)
+        .where('read', isEqualTo: false)
+        .snapshots()
+        .listen((s) {
+      if (mounted) setState(() => _unreadNotifs = s.docs.length);
+    });
+  }
+
+  Future<void> _logout() async {
+    await _auth.logout();
+    if (mounted) {
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(builder: (_) => const LoginScreen()),
+            (_) => false,
+      );
+    }
+  }
+
+  // ── Send arrival alert to every passenger on this shuttle ─────────────
+  Future<void> _sendArrivalAlert(String shuttleId) async {
+    if (shuttleId.isEmpty || shuttleId == '---') {
+      Helpers.showErrorSnackBar(context, 'No shuttle ID assigned to your account.');
+      return;
+    }
+    try {
+      // Find all active requests for this shuttle
+      final q = await FirebaseFirestore.instance
+          .collection('ride_requests')
+          .where('shuttle_id', isEqualTo: int.tryParse(
+          shuttleId.replaceAll(RegExp(r'[^0-9]'), '')) ?? 0)
+          .where('status', whereIn: [0, 1])
+          .get();
+
+      if (q.docs.isEmpty) {
+        if (mounted) Helpers.showErrorSnackBar(
+            context, 'No active passengers found for your shuttle.');
+        return;
+      }
+
+      final batch = FirebaseFirestore.instance.batch();
+      for (final doc in q.docs) {
+        final userId = doc.data()['userId'] as String? ?? '';
+        if (userId.isEmpty) continue;
+        // Update status to Arriving (2)
+        batch.update(doc.reference, {
+          'status':     2,
+          'statusName': 'Shuttle Arriving',
+        });
+        // Write notification
+        final ref = FirebaseFirestore.instance.collection('notifications').doc();
+        batch.set(ref, {
+          'userId':    userId,
+          'title':     '🟢 Shuttle Arriving!',
+          'body':      'Shuttle $shuttleId is on its way. Please be ready at your pickup location!',
+          'type':      'arrival',
+          'read':      false,
+          'createdAt': FieldValue.serverTimestamp(),
+        });
+      }
+      await batch.commit();
+      if (mounted) Helpers.showSuccessSnackBar(
+          context, 'Arrival alert sent to ${q.docs.length} passenger(s)!');
+    } catch (_) {
+      if (mounted) Helpers.showErrorSnackBar(context, 'Failed to send alert.');
+    }
+  }
+
+  // ── Update a single passenger's ride status ───────────────────────────
+  Future<void> _updatePassengerStatus(
+      String requestId, int newStatus, String userId) async {
+    final statusName = Esp32Service.getStatusName(newStatus);
+    try {
+      await FirebaseFirestore.instance
+          .collection('ride_requests')
+          .doc(requestId)
+          .update({
+        'status':     newStatus,
+        'statusName': statusName,
+        'updatedAt':  FieldValue.serverTimestamp(),
+      });
+      // Notify the passenger
+      final msgs = {
+        1: '🚌 Shuttle Assigned — your shuttle is confirmed.',
+        3: '✅ You\'ve been picked up! Have a safe ride.',
+        4: '🏁 Ride Completed — thank you for using ASSA!',
+        5: '❌ Your ride has been cancelled.',
+      };
+      if (msgs.containsKey(newStatus)) {
+        await FirebaseFirestore.instance.collection('notifications').add({
+          'userId':    userId,
+          'title':     statusName,
+          'body':      msgs[newStatus],
+          'type':      'ride_status',
+          'read':      false,
+          'createdAt': FieldValue.serverTimestamp(),
+        });
+      }
+      if (mounted) Helpers.showSuccessSnackBar(
+          context, 'Status updated to $statusName');
+    } catch (_) {
+      if (mounted) Helpers.showErrorSnackBar(context, 'Failed to update status.');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_isLoading) {
+      return const Scaffold(
+          body: Center(child: CircularProgressIndicator(
+              color: AppColors.driverColor)));
+    }
+    final name      = _driverData?['name']      ?? 'Driver';
+    final shuttleId = _driverData?['shuttleId'] ?? '---';
+    final uid       = FirebaseAuth.instance.currentUser?.uid ?? '';
+
+    return Scaffold(
+      backgroundColor: const Color(0xFFF0F4FF),
+      body: SafeArea(
+        child: RefreshIndicator(
+          onRefresh: _loadDriverData,
+          color: AppColors.driverColor,
+          child: SingleChildScrollView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            child: Column(children: [
+              _buildHeader(name, shuttleId),
+              Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(children: [
+                  _buildQuickActions(),
+                  const SizedBox(height: 20),
+                  _buildPassengersSection(uid, shuttleId),
+                  const SizedBox(height: 100),
+                ]),
+              ),
+            ]),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ── Header ──────────────────────────────────────────────────────────
+  Widget _buildHeader(String name, String shuttleId) {
+    return Container(
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft, end: Alignment.bottomRight,
+          colors: [Color(0xFF0D47A1), Color(0xFF1565C0), Color(0xFF1976D2)],
+        ),
+        borderRadius: const BorderRadius.only(
+            bottomLeft: Radius.circular(28), bottomRight: Radius.circular(28)),
+        boxShadow: [BoxShadow(
+            color: const Color(0xFF0D47A1).withOpacity(0.35),
+            blurRadius: 16, offset: const Offset(0, 6))],
+      ),
+      padding: const EdgeInsets.fromLTRB(20, 20, 20, 24),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Container(
+            width: 48, height: 48,
+            decoration: BoxDecoration(
+                shape: BoxShape.circle, color: Colors.white.withOpacity(0.2)),
+            child: Center(child: Text(Helpers.getInitials(name),
+                style: const TextStyle(color: Colors.white,
+                    fontWeight: FontWeight.w700, fontSize: 18))),
+          ),
+          const SizedBox(width: 12),
+          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(Helpers.getGreeting(),
+                    style: const TextStyle(color: Color(0xCCFFFFFF), fontSize: 13)),
+                Text(name, style: const TextStyle(color: Colors.white,
+                    fontSize: 18, fontWeight: FontWeight.w700)),
+              ])),
+          // Notification bell
+          Stack(children: [
+            IconButton(
+              onPressed: () => Navigator.push(context,
+                  MaterialPageRoute(builder: (_) => const NotificationsScreen())),
+              icon: const Icon(Icons.notifications_rounded,
+                  color: Colors.white, size: 26),
+            ),
+            if (_unreadNotifs > 0)
+              Positioned(top: 8, right: 8,
+                  child: Container(
+                    width: 16, height: 16,
+                    decoration: const BoxDecoration(
+                        color: Colors.red, shape: BoxShape.circle),
+                    child: Center(child: Text('$_unreadNotifs',
+                        style: const TextStyle(color: Colors.white,
+                            fontSize: 9, fontWeight: FontWeight.w700))),
+                  )),
+          ]),
+          IconButton(
+            onPressed: () => _showSettingsSheet(),
+            icon: const Icon(Icons.settings_rounded, color: Colors.white, size: 26),
+          ),
+        ]),
+        const SizedBox(height: 16),
+        // Shuttle ID + status chips
+        Row(children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.15),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: Colors.white.withOpacity(0.3))),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              const Icon(Icons.directions_bus_rounded,
+                  color: Colors.white, size: 16),
+              const SizedBox(width: 8),
+              Text('Shuttle: $shuttleId',
+                  style: const TextStyle(color: Colors.white,
+                      fontSize: 13, fontWeight: FontWeight.w600)),
+            ]),
+          ),
+          const SizedBox(width: 10),
+          // Live arrival alert button in header
+          GestureDetector(
+            onTap: () => _sendArrivalAlert(shuttleId),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+              decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(20)),
+              child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                Icon(Icons.notifications_active_rounded,
+                    color: Color(0xFF0D47A1), size: 16),
+                SizedBox(width: 6),
+                Text('Alert All',
+                    style: TextStyle(color: Color(0xFF0D47A1),
+                        fontSize: 12, fontWeight: FontWeight.w700)),
+              ]),
+            ),
+          ),
+        ]),
+      ]),
+    );
+  }
+
+  // ── Quick Actions ──────────────────────────────────────────────────
+  Widget _buildQuickActions() {
+    return Row(children: [
+      Expanded(child: _ActionCard(
+        icon: Icons.extension_rounded,
+        label: 'Weekly Puzzle',
+        subtitle: 'Slide tiles & earn pts',
+        color: const Color(0xFF6A1B9A),
+        onTap: () => Navigator.push(context,
+            MaterialPageRoute(builder: (_) => const PuzzleScreen())),
+      )),
+      const SizedBox(width: 12),
+      Expanded(child: _ActionCard(
+        icon: Icons.search_rounded,
+        label: 'Lost & Found',
+        subtitle: 'Report or find items',
+        color: const Color(0xFF00695C),
+        onTap: () => Navigator.push(context,
+            MaterialPageRoute(builder: (_) => const UserLostFoundScreen())),
+      )),
+    ]);
+  }
+
+  // ── Passengers Section ─────────────────────────────────────────────
+  Widget _buildPassengersSection(String uid, String shuttleId) {
+    // Parse shuttle_id integer from shuttleId string e.g. "AFIT 007" → 7
+    final shuttleInt = int.tryParse(
+        shuttleId.replaceAll(RegExp(r'[^0-9]'), '')) ?? 0;
+
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Row(children: [
+        const Expanded(
+          child: Text('My Passengers',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700,
+                  color: AppColors.textPrimary)),
+        ),
+        // Filter chips
+        ...[['Active', [0,1,2,3]], ['All', null], ['Done', [4,5]]]
+            .map((f) {
+          final label  = f[0] as String;
+          final sel    = _statusFilter == label;
+          return GestureDetector(
+            onTap: () => setState(() => _statusFilter = label),
+            child: Container(
+              margin: const EdgeInsets.only(left: 6),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              decoration: BoxDecoration(
+                color: sel ? AppColors.driverColor : AppColors.surface,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                    color: sel ? AppColors.driverColor : AppColors.inputBorder),
+              ),
+              child: Text(label, style: TextStyle(
+                  fontSize: 11, fontWeight: FontWeight.w600,
+                  color: sel ? Colors.white : AppColors.textSecondary)),
+            ),
+          );
+        }),
+      ]),
+      const SizedBox(height: 12),
+
+      StreamBuilder<QuerySnapshot>(
+        stream: shuttleInt == 0
+        // No shuttle assigned — show empty
+            ? const Stream.empty()
+            : FirebaseFirestore.instance
+            .collection('ride_requests')
+            .where('shuttle_id', isEqualTo: shuttleInt)
+            .orderBy('timestamp', descending: false)
+            .snapshots(),
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator(
+                color: AppColors.driverColor));
+          }
+
+          var docs = snapshot.data?.docs ?? [];
+
+          // Apply status filter
+          if (_statusFilter == 'Active') {
+            docs = docs.where((d) {
+              final s = (d.data() as Map)['status'] as int? ?? 0;
+              return s >= 0 && s <= 3;
+            }).toList();
+          } else if (_statusFilter == 'Done') {
+            docs = docs.where((d) {
+              final s = (d.data() as Map)['status'] as int? ?? 0;
+              return s == 4 || s == 5;
+            }).toList();
+          }
+
+          if (shuttleInt == 0) {
+            return _emptyCard(
+              icon: Icons.directions_bus_outlined,
+              title: 'No shuttle assigned',
+              subtitle: 'Contact admin to get a shuttle ID assigned to your account.',
+            );
+          }
+
+          if (docs.isEmpty) {
+            return _emptyCard(
+              icon: Icons.people_outline_rounded,
+              title: _statusFilter == 'Active'
+                  ? 'No active passengers'
+                  : 'No passengers yet',
+              subtitle: 'Passengers booked to your shuttle will appear here.',
+            );
+          }
+
+          return Column(
+            children: docs.map((doc) {
+              final data = doc.data() as Map<String, dynamic>;
+              return _PassengerCard(
+                requestId: doc.id,
+                data:      data,
+                onUpdateStatus: (newStatus) => _updatePassengerStatus(
+                    doc.id, newStatus, data['userId'] ?? ''),
+              );
+            }).toList(),
+          );
+        },
+      ),
+    ]);
+  }
+
+  Widget _emptyCard({
+    required IconData icon,
+    required String   title,
+    required String   subtitle,
+  }) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: AppColors.cardBorder)),
+      child: Column(children: [
+        Icon(icon, size: 48, color: AppColors.textHint),
+        const SizedBox(height: 10),
+        Text(title, style: const TextStyle(
+            fontSize: 14, fontWeight: FontWeight.w600,
+            color: AppColors.textSecondary)),
+        const SizedBox(height: 4),
+        Text(subtitle, style: const TextStyle(
+            fontSize: 12, color: AppColors.textHint),
+            textAlign: TextAlign.center),
+      ]),
+    );
+  }
+
+  void _showSettingsSheet() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      builder: (_) => _DriverSettingsSheet(
+          driverData: _driverData, onLogout: _logout),
+    );
+  }
+}
+
+// ======================================================================
+// PASSENGER CARD — shows one ride request with status update controls
+// ======================================================================
+class _PassengerCard extends StatelessWidget {
+  final String                requestId;
+  final Map<String, dynamic>  data;
+  final void Function(int)    onUpdateStatus;
+  const _PassengerCard({
+    required this.requestId,
+    required this.data,
+    required this.onUpdateStatus,
+  });
+
+  Color _statusColor(int s) {
+    switch (s) {
+      case 0: return AppColors.textHint;
+      case 1: return AppColors.primary;
+      case 2: return AppColors.warning;
+      case 3: return AppColors.success;
+      case 4: return AppColors.success;
+      case 5: return AppColors.error;
+      default: return AppColors.textHint;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final status   = data['status'] as int? ?? 0;
+    final userName = data['userName'] ?? 'Passenger';
+    final pickup   = data['pickupLocation'] ?? data['origin'] ?? '—';
+    final dest     = data['destination'] ?? '—';
+    final rideType = data['rideTypeName'] ?? 'Shared';
+    final statusName = Esp32Service.getStatusName(status);
+    final color    = _statusColor(status);
+
+    // What the driver can do next
+    final List<Map<String, dynamic>> actions = [];
+    if (status == 0 || status == 1) {
+      actions.add({'label': '🟢 Mark Arriving', 'status': 2, 'color': AppColors.warning});
+    }
+    if (status == 2) {
+      actions.add({'label': '✅ Picked Up', 'status': 3, 'color': AppColors.success});
+    }
+    if (status == 3) {
+      actions.add({'label': '🏁 Complete Ride', 'status': 4, 'color': AppColors.primary});
+    }
+    if (status < 4) {
+      actions.add({'label': '❌ Cancel', 'status': 5, 'color': AppColors.error});
+    }
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: color.withOpacity(0.3), width: 1.5),
+        boxShadow: [BoxShadow(
+            color: AppColors.shadow, blurRadius: 6,
+            offset: const Offset(0, 2))],
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        // Header
+        Container(
+          padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+          decoration: BoxDecoration(
+            color: color.withOpacity(0.07),
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(15)),
+            border: Border(bottom: BorderSide(color: color.withOpacity(0.15))),
+          ),
+          child: Row(children: [
+            Container(
+              width: 32, height: 32,
+              decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: AppColors.primary.withOpacity(0.12)),
+              child: Center(child: Text(
+                  Helpers.getInitials(userName),
+                  style: const TextStyle(fontSize: 12,
+                      fontWeight: FontWeight.w700, color: AppColors.primary))),
+            ),
+            const SizedBox(width: 10),
+            Expanded(child: Text(userName, style: const TextStyle(
+                fontSize: 13, fontWeight: FontWeight.w700,
+                color: AppColors.textPrimary))),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                color: color.withOpacity(0.12),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(statusName.toUpperCase(),
+                  style: TextStyle(fontSize: 9, fontWeight: FontWeight.w800,
+                      color: color, letterSpacing: 0.5)),
+            ),
+          ]),
+        ),
+
+        // Body
+        Padding(
+          padding: const EdgeInsets.all(14),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(children: [
+              const Icon(Icons.radio_button_checked_rounded,
+                  size: 14, color: AppColors.success),
+              const SizedBox(width: 6),
+              Expanded(child: Text(pickup,
+                  style: const TextStyle(fontSize: 12,
+                      color: AppColors.textSecondary))),
+            ]),
+            const SizedBox(height: 4),
+            Row(children: [
+              const Icon(Icons.location_on_rounded,
+                  size: 14, color: AppColors.error),
+              const SizedBox(width: 6),
+              Expanded(child: Text(dest,
+                  style: const TextStyle(fontSize: 12,
+                      color: AppColors.textSecondary))),
+            ]),
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                color: rideType == 'Chartered'
+                    ? AppColors.adminColor.withOpacity(0.1)
+                    : AppColors.primary.withOpacity(0.08),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Text(rideType, style: TextStyle(
+                  fontSize: 10, fontWeight: FontWeight.w700,
+                  color: rideType == 'Chartered'
+                      ? AppColors.adminColor : AppColors.primary)),
+            ),
+
+            // Action buttons
+            if (actions.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Row(children: actions.map((a) => Expanded(
+                child: Padding(
+                  padding: EdgeInsets.only(
+                      right: a == actions.last ? 0 : 8),
+                  child: ElevatedButton(
+                    onPressed: () {
+                      // Confirm cancel
+                      if (a['status'] == 5) {
+                        showDialog(
+                          context: context,
+                          builder: (ctx) => AlertDialog(
+                            title: const Text('Cancel ride?'),
+                            content: Text('Cancel $userName\'s ride?'),
+                            actions: [
+                              TextButton(
+                                  onPressed: () => Navigator.pop(ctx),
+                                  child: const Text('No')),
+                              TextButton(
+                                onPressed: () {
+                                  Navigator.pop(ctx);
+                                  onUpdateStatus(5);
+                                },
+                                child: const Text('Cancel Ride',
+                                    style: TextStyle(color: AppColors.error)),
+                              ),
+                            ],
+                          ),
+                        );
+                      } else {
+                        onUpdateStatus(a['status'] as int);
+                      }
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: (a['color'] as Color).withOpacity(0.9),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10)),
+                      padding: const EdgeInsets.symmetric(vertical: 10),
+                      elevation: 0,
+                    ),
+                    child: Text(a['label'] as String,
+                        style: const TextStyle(
+                            color: Colors.white, fontSize: 11,
+                            fontWeight: FontWeight.w700)),
+                  ),
+                ),
+              )).toList()),
+            ],
+          ]),
+        ),
+      ]),
+    );
+  }
+}
+
+// ── Small action card ───────────────────────────────────────────────────
+class _ActionCard extends StatelessWidget {
+  final IconData icon;
+  final String label, subtitle;
+  final Color color;
+  final VoidCallback onTap;
+  const _ActionCard({required this.icon, required this.label,
+    required this.subtitle, required this.color, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) => GestureDetector(
+    onTap: onTap,
+    child: Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: AppColors.cardBorder),
+          boxShadow: [BoxShadow(color: AppColors.shadow,
+              blurRadius: 8, offset: const Offset(0, 2))]),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Container(width: 40, height: 40,
+                decoration: BoxDecoration(
+                    color: color.withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(10)),
+                child: Icon(icon, color: color, size: 22)),
+            const SizedBox(height: 10),
+            Text(label, style: const TextStyle(
+                fontSize: 13, fontWeight: FontWeight.w700,
+                color: AppColors.textPrimary)),
+            Text(subtitle, style: const TextStyle(
+                fontSize: 11, color: AppColors.textSecondary)),
+          ]),
+    ),
+  );
+}
+
+// ======================================================================
+// DRIVER SETTINGS SHEET
+// ======================================================================
+class _DriverSettingsSheet extends StatefulWidget {
+  final Map<String, dynamic>? driverData;
+  final VoidCallback onLogout;
+  const _DriverSettingsSheet(
+      {required this.driverData, required this.onLogout});
+  @override
+  State<_DriverSettingsSheet> createState() => _DriverSettingsSheetState();
+}
+
+class _DriverSettingsSheetState extends State<_DriverSettingsSheet> {
+  bool _editMode = false;
+  late TextEditingController _nameCtrl;
+  bool _isSaving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _nameCtrl = TextEditingController(
+        text: widget.driverData?['name'] ?? '');
+  }
+
+  @override
+  void dispose() {
+    _nameCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    if (_nameCtrl.text.trim().isEmpty) return;
+    setState(() => _isSaving = true);
+    try {
+      final uid = FirebaseAuth.instance.currentUser?.uid;
+      if (uid != null) {
+        await FirebaseFirestore.instance
+            .collection('users').doc(uid)
+            .update({'name': _nameCtrl.text.trim()});
+        if (mounted) {
+          setState(() { _editMode = false; _isSaving = false; });
+          Helpers.showSuccessSnackBar(context, 'Profile updated!');
+        }
+      }
+    } catch (_) {
+      if (mounted) setState(() => _isSaving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final name      = widget.driverData?['name']      ?? 'Driver';
+    final email     = widget.driverData?['email']     ?? '';
+    final shuttleId = widget.driverData?['shuttleId'] ?? '';
+
+    return Padding(
+      padding: EdgeInsets.only(
+          bottom: MediaQuery.of(context).viewInsets.bottom),
+      child: Container(
+        padding: const EdgeInsets.all(24),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Container(width: 40, height: 4,
+              decoration: BoxDecoration(color: AppColors.divider,
+                  borderRadius: BorderRadius.circular(2))),
+          const SizedBox(height: 20),
+          Row(children: [
+            Container(
+              width: 56, height: 56,
+              decoration: BoxDecoration(shape: BoxShape.circle,
+                  color: AppColors.driverColor.withOpacity(0.12)),
+              child: Center(child: Text(Helpers.getInitials(name),
+                  style: const TextStyle(fontSize: 20,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.driverColor))),
+            ),
+            const SizedBox(width: 14),
+            Expanded(child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start, children: [
+              if (_editMode)
+                TextField(
+                  controller: _nameCtrl, autofocus: true,
+                  decoration: const InputDecoration(
+                      labelText: 'Name', isDense: true),
+                  style: const TextStyle(fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.textPrimary),
+                )
+              else
+                Text(name, style: const TextStyle(fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.textPrimary)),
+              Text(email, style: const TextStyle(
+                  fontSize: 12, color: AppColors.textSecondary)),
+              if (shuttleId.isNotEmpty)
+                Text('Shuttle: $shuttleId',
+                    style: const TextStyle(fontSize: 12,
+                        color: AppColors.driverColor,
+                        fontWeight: FontWeight.w600)),
+            ])),
+          ]),
+          const SizedBox(height: 16),
+          if (_editMode) ...[
+            Row(children: [
+              Expanded(child: OutlinedButton(
+                  onPressed: () => setState(() => _editMode = false),
+                  child: const Text('Cancel'))),
+              const SizedBox(width: 12),
+              Expanded(child: ElevatedButton(
+                onPressed: _isSaving ? null : _save,
+                style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.driverColor),
+                child: _isSaving
+                    ? const SizedBox(width: 18, height: 18,
+                    child: CircularProgressIndicator(
+                        strokeWidth: 2, color: Colors.white))
+                    : const Text('Save',
+                    style: TextStyle(color: Colors.white)),
+              )),
+            ]),
+          ] else ...[
+            const Divider(color: AppColors.divider),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.person_outline_rounded),
+              title: const Text('Edit Profile'),
+              trailing: const Icon(Icons.chevron_right_rounded,
+                  color: AppColors.textHint),
+              onTap: () => setState(() => _editMode = true),
+            ),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.logout_rounded,
+                  color: AppColors.error),
+              title: const Text('Logout',
+                  style: TextStyle(color: AppColors.error)),
+              trailing: const Icon(Icons.chevron_right_rounded,
+                  color: AppColors.textHint),
+              onTap: () { Navigator.pop(context); widget.onLogout(); },
+            ),
+          ],
+          const SizedBox(height: 16),
+        ]),
+      ),
+    );
+  }
+}
