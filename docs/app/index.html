@@ -1,1013 +1,1212 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>ASSA — AFIT Shuttle Service App</title>
-  <meta name="description" content="ASSA is the official AFIT campus shuttle management app. Request rides, track drivers, and stay connected — built for the AFIT community." />
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:ital,wght@0,300;0,400;0,500;1,300&display=swap" rel="stylesheet" />
-  <style>
-    :root {
-      --navy: #0D1B4B;
-      --navy-deep: #080F2D;
-      --blue: #1A237E;
-      --blue-mid: #1565C0;
-      --blue-bright: #1976D2;
-      --accent: #42A5F5;
-      --accent-light: #90CAF9;
-      --gold: #FFB300;
-      --white: #F8FAFF;
-      --white-dim: rgba(248,250,255,0.7);
-      --white-faint: rgba(248,250,255,0.12);
-      --card-bg: rgba(255,255,255,0.04);
-      --card-border: rgba(66,165,245,0.18);
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <meta name="apple-mobile-web-app-title" content="ASSA"/>
+  <meta name="theme-color" content="#0D47A1"/>
+  <title>ASSA — AFIT Shuttle Service</title>
+  <link rel="manifest" href="manifest.json"/>
+  <link rel="apple-touch-icon" href="icon-192.png"/>
+
+  <!-- Firebase -->
+  <script type="module">
+    import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
+    import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword,
+             signOut, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js';
+    import { getFirestore, collection, doc, getDoc, getDocs, addDoc, updateDoc,
+             query, where, orderBy, limit, serverTimestamp, onSnapshot,
+             enableIndexedDbPersistence } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js';
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyCBN5iCfV2o8to9A5H2nUb-bXRDYhD4PJc",
+      authDomain: "afit-shuttle-system.firebaseapp.com",
+      projectId: "afit-shuttle-system",
+      storageBucket: "afit-shuttle-system.firebasestorage.app",
+      messagingSenderId: "419651451775",
+      appId: "1:419651451775:ios:166e02856ad950fd15b84a",
+      databaseURL: "https://afit-shuttle-system-default-rtdb.firebaseio.com"
+    };
+
+    const app  = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db   = getFirestore(app);
+
+    // Enable offline persistence
+    enableIndexedDbPersistence(db).catch(() => {});
+
+    // ── LOCATIONS ──────────────────────────────────────────────────────
+    const LOCATIONS = {
+      1: 'AFIT Gates', 2: '45x1 Hostel', 3: 'Old Girls Hostel',
+      4: 'TETFUND Hostel', 5: 'BK', 6: 'Boys Hostel',
+      7: 'Alfa Hall', 8: 'EED', 9: 'AFIT Mosque',
+      10: 'New Mechanical', 11: 'Centre of Entrepreneurship', 12: 'Hall A'
+    };
+
+    // ── STATE ──────────────────────────────────────────────────────────
+    let currentUser = null;
+    let userData    = null;
+    let currentScreen = 'splash';
+
+    // ── NAVIGATION ─────────────────────────────────────────────────────
+    function showScreen(id) {
+      document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+      const el = document.getElementById(id);
+      if (el) { el.classList.add('active'); currentScreen = id; }
+      // update bottom nav
+      document.querySelectorAll('.nav-item').forEach(n => {
+        n.classList.toggle('active', n.dataset.screen === id);
+      });
+      document.getElementById('bottom-nav').style.display =
+        ['login','register','splash'].includes(id) ? 'none' : 'flex';
     }
 
+    // ── SPLASH ─────────────────────────────────────────────────────────
+    setTimeout(() => {
+      onAuthStateChanged(auth, async user => {
+        if (user) {
+          currentUser = user;
+          await loadUserData();
+          showScreen('dashboard');
+        } else {
+          showScreen('login');
+        }
+      });
+    }, 1800);
+
+    async function loadUserData() {
+      try {
+        const snap = await getDoc(doc(db, 'users', currentUser.uid));
+        if (snap.exists()) {
+          userData = snap.data();
+          // Update UI with user info
+          const name = userData.name || currentUser.email;
+          document.querySelectorAll('.user-name').forEach(el => el.textContent = name);
+          document.querySelectorAll('.user-pickup-id').forEach(el =>
+            el.textContent = userData.pickupId || '---');
+        }
+      } catch(e) { console.log('loadUserData:', e); }
+    }
+
+    // ── AUTH ───────────────────────────────────────────────────────────
+    window.doLogin = async function() {
+      const email = document.getElementById('login-email').value.trim();
+      const pass  = document.getElementById('login-pass').value;
+      const btn   = document.getElementById('login-btn');
+      if (!email || !pass) { showToast('Enter email and password'); return; }
+      btn.disabled = true; btn.textContent = 'Signing in...';
+      try {
+        await signInWithEmailAndPassword(auth, email, pass);
+        currentUser = auth.currentUser;
+        await loadUserData();
+        showScreen('dashboard');
+      } catch(e) {
+        showToast(friendlyError(e.code));
+      } finally { btn.disabled = false; btn.textContent = 'Sign In'; }
+    };
+
+    window.doRegister = async function() {
+      const name  = document.getElementById('reg-name').value.trim();
+      const email = document.getElementById('reg-email').value.trim();
+      const pass  = document.getElementById('reg-pass').value;
+      const btn   = document.getElementById('reg-btn');
+      if (!name || !email || !pass) { showToast('Fill all fields'); return; }
+      if (pass.length < 6) { showToast('Password must be 6+ characters'); return; }
+      btn.disabled = true; btn.textContent = 'Creating account...';
+      try {
+        const cred = await createUserWithEmailAndPassword(auth, email, pass);
+        const pickupId = await generatePickupId();
+        await addDoc(collection(db,'users'), {});
+        // Use setDoc with uid
+        const { setDoc } = await import('https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js');
+        await setDoc(doc(db,'users', cred.user.uid), {
+          name, email, role: 'user', pickupId,
+          createdAt: serverTimestamp(), platform: 'web'
+        });
+        currentUser = cred.user;
+        userData = { name, email, role: 'user', pickupId };
+        document.querySelectorAll('.user-name').forEach(el => el.textContent = name);
+        document.querySelectorAll('.user-pickup-id').forEach(el => el.textContent = pickupId);
+        showScreen('dashboard');
+        showToast('Welcome to ASSA, ' + name + '!');
+      } catch(e) {
+        showToast(friendlyError(e.code));
+      } finally { btn.disabled = false; btn.textContent = 'Create Account'; }
+    };
+
+    window.doLogout = async function() {
+      if (!confirm('Sign out of ASSA?')) return;
+      await signOut(auth);
+      currentUser = null; userData = null;
+      showScreen('login');
+    };
+
+    async function generatePickupId() {
+      const letters = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+      for (let i = 0; i < 20; i++) {
+        const id = letters[Math.floor(Math.random()*letters.length)] +
+                   Math.floor(Math.random()*10) + Math.floor(Math.random()*10);
+        const q = query(collection(db,'users'), where('pickupId','==',id));
+        const snap = await getDocs(q);
+        if (snap.empty) return id;
+      }
+      return 'X' + Math.floor(Math.random()*89+10);
+    }
+
+    // ── DASHBOARD ──────────────────────────────────────────────────────
+    window.goToDashboard = function() {
+      loadDashboardStats();
+      showScreen('dashboard');
+    };
+
+    async function loadDashboardStats() {
+      try {
+        if (!currentUser) return;
+        const q = query(collection(db,'ride_requests'),
+          where('userId','==',currentUser.uid), limit(5));
+        const snap = await getDocs(q);
+        document.getElementById('dash-booking-count').textContent = snap.size;
+      } catch(e) {}
+    }
+
+    // ── REQUEST RIDE ───────────────────────────────────────────────────
+    window.goToRequest = function() {
+      // Populate dropdowns
+      const pickupSel = document.getElementById('req-pickup');
+      const destSel   = document.getElementById('req-dest');
+      [pickupSel, destSel].forEach(sel => {
+        sel.innerHTML = '<option value="">Select location</option>';
+        Object.entries(LOCATIONS).forEach(([k,v]) => {
+          sel.innerHTML += `<option value="${k}">${v}</option>`;
+        });
+      });
+      showScreen('request');
+    };
+
+    window.submitRequest = async function() {
+      const pickup = document.getElementById('req-pickup').value;
+      const dest   = document.getElementById('req-dest').value;
+      const type   = document.querySelector('input[name="ride-type"]:checked').value;
+      const pax    = document.getElementById('req-pax').value;
+      const btn    = document.getElementById('req-btn');
+
+      if (!pickup || !dest) { showToast('Select pickup and destination'); return; }
+      if (pickup === dest)  { showToast('Pickup and destination cannot be the same'); return; }
+
+      btn.disabled = true; btn.textContent = 'Submitting...';
+      try {
+        await addDoc(collection(db,'ride_requests'), {
+          userId:         currentUser.uid,
+          pickupId:       userData?.pickupId || '???',
+          pickupLocation: LOCATIONS[pickup],
+          pickupCode:     parseInt(pickup),
+          destination:    LOCATIONS[dest],
+          destCode:       parseInt(dest),
+          rideType:       type,
+          passengers:     parseInt(pax),
+          status:         0,
+          requestType:    'online',
+          platform:       'web',
+          timestamp:      serverTimestamp(),
+        });
+        showToast('Ride request submitted! ✅');
+        document.getElementById('req-pickup').value = '';
+        document.getElementById('req-dest').value   = '';
+        setTimeout(() => showScreen('bookings'), 1200);
+      } catch(e) {
+        showToast('Failed to submit. Check your connection.');
+      } finally { btn.disabled = false; btn.textContent = 'Request Ride'; }
+    };
+
+    // ── BOOKINGS ───────────────────────────────────────────────────────
+    window.goToBookings = async function() {
+      showScreen('bookings');
+      const list = document.getElementById('bookings-list');
+      list.innerHTML = '<div class="loading">Loading...</div>';
+      try {
+        const q = query(collection(db,'ride_requests'),
+          where('userId','==',currentUser.uid));
+        const snap = await getDocs(q);
+        if (snap.empty) {
+          list.innerHTML = '<div class="empty-state">No bookings yet.<br>Request your first ride!</div>';
+          return;
+        }
+        const docs = snap.docs.map(d => ({id:d.id,...d.data()}));
+        docs.sort((a,b) => (b.timestamp?.seconds||0) - (a.timestamp?.seconds||0));
+        list.innerHTML = docs.map(d => `
+          <div class="booking-card">
+            <div class="booking-header">
+              <span class="pickup-badge">${d.pickupId || '---'}</span>
+              <span class="status-badge status-${d.status||0}">${statusLabel(d.status||0)}</span>
+            </div>
+            <div class="booking-route">
+              <span class="route-from">📍 ${d.pickupLocation || 'Unknown'}</span>
+              <span class="route-arrow">→</span>
+              <span class="route-to">🏁 ${d.destination || 'Unknown'}</span>
+            </div>
+            <div class="booking-meta">
+              ${d.rideType==='chartered'?'🚌 Chartered':'👥 Shared'} •
+              ${d.passengers||1} passenger${(d.passengers||1)>1?'s':''} •
+              ${d.platform==='web'?'🌐 Web':'📱 App'}
+            </div>
+          </div>
+        `).join('');
+      } catch(e) {
+        list.innerHTML = '<div class="empty-state">Could not load bookings.<br>Check your connection.</div>';
+      }
+    };
+
+    function statusLabel(s) {
+      return ['Pending','Assigned','On the way','Picked up','Completed','Cancelled'][s] || 'Pending';
+    }
+
+    // ── LOST & FOUND ───────────────────────────────────────────────────
+    window.goToLostFound = async function() {
+      showScreen('lostfound');
+      loadLostFoundItems();
+    };
+
+    async function loadLostFoundItems() {
+      const list = document.getElementById('lf-list');
+      list.innerHTML = '<div class="loading">Loading...</div>';
+      try {
+        const snap = await getDocs(collection(db,'lost_found'));
+        if (snap.empty) {
+          list.innerHTML = '<div class="empty-state">No lost & found items posted yet.</div>';
+          return;
+        }
+        const docs = snap.docs.map(d => ({id:d.id,...d.data()}));
+        docs.sort((a,b) => (b.createdAt?.seconds||0) - (a.createdAt?.seconds||0));
+        list.innerHTML = docs.map(d => `
+          <div class="lf-card ${d.type==='lost'?'lf-lost':'lf-found'}">
+            <div class="lf-type">${d.type==='lost'?'🔴 LOST':'🟢 FOUND'}</div>
+            <div class="lf-title">${d.itemName || 'Unknown item'}</div>
+            <div class="lf-desc">${d.description || ''}</div>
+            <div class="lf-meta">📍 ${d.location||'Unknown'} • ${d.contactName||'Anonymous'}</div>
+          </div>
+        `).join('');
+      } catch(e) {
+        list.innerHTML = '<div class="empty-state">Could not load items.</div>';
+      }
+    }
+
+    window.postLostFound = async function() {
+      const type    = document.querySelector('input[name="lf-type"]:checked').value;
+      const item    = document.getElementById('lf-item').value.trim();
+      const desc    = document.getElementById('lf-desc').value.trim();
+      const loc     = document.getElementById('lf-location').value.trim();
+      const contact = document.getElementById('lf-contact').value.trim();
+      if (!item || !loc) { showToast('Fill in item name and location'); return; }
+      try {
+        await addDoc(collection(db,'lost_found'), {
+          type, itemName: item, description: desc,
+          location: loc, contactName: contact || userData?.name || 'Anonymous',
+          userId: currentUser.uid, createdAt: serverTimestamp()
+        });
+        showToast('Posted successfully!');
+        document.getElementById('lf-item').value = '';
+        document.getElementById('lf-desc').value = '';
+        document.getElementById('lf-location').value = '';
+        document.getElementById('lf-contact').value = '';
+        loadLostFoundItems();
+        document.getElementById('lf-form').style.display = 'none';
+      } catch(e) { showToast('Failed to post. Check connection.'); }
+    };
+
+    // ── NOTIFICATIONS ──────────────────────────────────────────────────
+    window.goToNotifications = async function() {
+      showScreen('notifications');
+      const list = document.getElementById('notif-list');
+      list.innerHTML = '<div class="loading">Loading...</div>';
+      try {
+        const q = query(collection(db,'notifications'),
+          where('userId','==',currentUser.uid), limit(20));
+        const snap = await getDocs(q);
+        if (snap.empty) {
+          list.innerHTML = '<div class="empty-state">No notifications yet.</div>';
+          return;
+        }
+        const docs = snap.docs.map(d => ({id:d.id,...d.data()}));
+        docs.sort((a,b) => (b.createdAt?.seconds||0) - (a.createdAt?.seconds||0));
+        list.innerHTML = docs.map(d => `
+          <div class="notif-card ${d.read?'':'notif-unread'}">
+            <div class="notif-title">${d.title||'Notification'}</div>
+            <div class="notif-body">${d.body||''}</div>
+          </div>
+        `).join('');
+      } catch(e) {
+        list.innerHTML = '<div class="empty-state">Could not load notifications.</div>';
+      }
+    };
+
+    // ── SUPPORT ────────────────────────────────────────────────────────
+    window.goToSupport = function() { showScreen('support'); loadReports(); };
+
+    async function loadReports() {
+      const list = document.getElementById('report-list');
+      list.innerHTML = '<div class="loading">Loading...</div>';
+      try {
+        const q = query(collection(db,'complaints'),
+          where('userId','==',currentUser.uid));
+        const snap = await getDocs(q);
+        if (snap.empty) {
+          list.innerHTML = '<div class="empty-state">No complaints submitted yet.</div>';
+          return;
+        }
+        const docs = snap.docs.map(d => ({id:d.id,...d.data()}));
+        list.innerHTML = docs.map(d => `
+          <div class="report-card">
+            <div class="report-header">
+              <span class="report-subject">${d.subject||'Complaint'}</span>
+              <span class="report-status status-text-${d.status||'open'}">${d.status||'Open'}</span>
+            </div>
+            <div class="report-body">${d.message||''}</div>
+            ${d.adminReply?`<div class="report-reply">💬 Admin: ${d.adminReply}</div>`:''}
+          </div>
+        `).join('');
+      } catch(e) {
+        list.innerHTML = '<div class="empty-state">Could not load reports.</div>';
+      }
+    }
+
+    window.submitReport = async function() {
+      const subject = document.getElementById('rep-subject').value.trim();
+      const message = document.getElementById('rep-message').value.trim();
+      if (!subject || !message) { showToast('Fill in subject and message'); return; }
+      try {
+        await addDoc(collection(db,'complaints'), {
+          userId: currentUser.uid, userName: userData?.name || 'User',
+          subject, message, status: 'open',
+          createdAt: serverTimestamp(), platform: 'web'
+        });
+        showToast('Complaint submitted!');
+        document.getElementById('rep-subject').value = '';
+        document.getElementById('rep-message').value = '';
+        document.getElementById('rep-form').style.display = 'none';
+        loadReports();
+      } catch(e) { showToast('Failed to submit.'); }
+    };
+
+    // ── PUZZLE GAME ────────────────────────────────────────────────────
+    const PUZZLES = [
+      { q: 'What is the main gate of AFIT called?', a: 'afit gate', hint: 'Think about the name of the institution' },
+      { q: 'How many passengers can a shared shuttle carry at most?', a: '4', hint: 'Single digit number' },
+      { q: 'What does ASSA stand for?', a: 'afit shuttle service app', hint: 'Four words' },
+      { q: 'What technology does ASSA use for offline hostel requests?', a: 'esp32', hint: 'A microcontroller' },
+      { q: 'What radio technology carries packets between ESP32 units?', a: 'lora', hint: 'Long Range radio' },
+      { q: 'Which Flutter database is used in ASSA?', a: 'firestore', hint: 'A Google Firebase product' },
+      { q: 'What is the minimum iOS version required for ASSA?', a: '13', hint: 'A number between 10 and 15' },
+      { q: 'How many characters is a Pickup ID?', a: '3', hint: 'Less than 5' },
+    ];
+
+    let puzzleIndex = 0;
+    let puzzleScore = 0;
+    let puzzleAnswered = false;
+
+    window.goToPuzzle = function() {
+      showScreen('puzzle');
+      puzzleIndex = Math.floor(Math.random() * PUZZLES.length);
+      puzzleScore = 0;
+      loadPuzzle();
+    };
+
+    function loadPuzzle() {
+      puzzleAnswered = false;
+      const p = PUZZLES[puzzleIndex];
+      document.getElementById('puzzle-question').textContent = p.q;
+      document.getElementById('puzzle-hint').textContent = '💡 ' + p.hint;
+      document.getElementById('puzzle-hint').style.display = 'none';
+      document.getElementById('puzzle-answer').value = '';
+      document.getElementById('puzzle-result').textContent = '';
+      document.getElementById('puzzle-result').className = 'puzzle-result';
+      document.getElementById('puzzle-score').textContent = 'Score: ' + puzzleScore;
+    }
+
+    window.showHint = function() {
+      document.getElementById('puzzle-hint').style.display = 'block';
+    };
+
+    window.checkAnswer = function() {
+      if (puzzleAnswered) return;
+      const ans = document.getElementById('puzzle-answer').value.trim().toLowerCase();
+      const correct = PUZZLES[puzzleIndex].a.toLowerCase();
+      const result = document.getElementById('puzzle-result');
+      if (ans === correct) {
+        puzzleScore++;
+        result.textContent = '✅ Correct! Well done!';
+        result.className = 'puzzle-result correct';
+        puzzleAnswered = true;
+        document.getElementById('puzzle-score').textContent = 'Score: ' + puzzleScore;
+      } else {
+        result.textContent = '❌ Wrong! Try again.';
+        result.className = 'puzzle-result wrong';
+      }
+    };
+
+    window.nextPuzzle = function() {
+      puzzleIndex = (puzzleIndex + 1) % PUZZLES.length;
+      loadPuzzle();
+    };
+
+    // ── HELPERS ────────────────────────────────────────────────────────
+    function showToast(msg) {
+      const t = document.getElementById('toast');
+      t.textContent = msg;
+      t.classList.add('show');
+      setTimeout(() => t.classList.remove('show'), 3000);
+    }
+
+    function friendlyError(code) {
+      const map = {
+        'auth/invalid-email': 'Invalid email address',
+        'auth/user-not-found': 'No account found with this email',
+        'auth/wrong-password': 'Incorrect password',
+        'auth/email-already-in-use': 'Email already registered',
+        'auth/weak-password': 'Password too weak — use 6+ characters',
+        'auth/network-request-failed': 'No internet connection',
+        'auth/invalid-credential': 'Invalid email or password',
+      };
+      return map[code] || 'Something went wrong. Try again.';
+    }
+
+    // ── SERVICE WORKER ─────────────────────────────────────────────────
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('sw.js').catch(() => {});
+    }
+
+    // Expose globals
+    window.showScreen = showScreen;
+    window.showToast  = showToast;
+    window.LOCATIONS  = LOCATIONS;
+  </script>
+
+  <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-    html { scroll-behavior: smooth; }
-
-    body {
-      font-family: 'DM Sans', sans-serif;
-      background: var(--navy-deep);
-      color: var(--white);
-      overflow-x: hidden;
+    :root {
+      --navy:   #0D47A1;
+      --blue:   #1565C0;
+      --cyan:   #00BCD4;
+      --bg:     #F5F7FF;
+      --card:   #FFFFFF;
+      --text:   #0D1B3E;
+      --muted:  #5A6A8A;
+      --border: #DDE3F0;
+      --green:  #2E7D32;
+      --red:    #C62828;
+      --amber:  #F57F17;
+      --radius: 16px;
+      --safe-top: env(safe-area-inset-top, 0px);
+      --safe-bot: env(safe-area-inset-bottom, 0px);
     }
 
-    /* ── NOISE TEXTURE OVERLAY ── */
-    body::before {
-      content: '';
-      position: fixed;
-      inset: 0;
-      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.035'/%3E%3C/svg%3E");
-      pointer-events: none;
-      z-index: 0;
-    }
-
-    /* ── NAV ── */
-    nav {
-      position: fixed;
-      top: 0; left: 0; right: 0;
-      z-index: 100;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 1.1rem 5%;
-      background: rgba(8,15,45,0.75);
-      backdrop-filter: blur(18px);
-      border-bottom: 1px solid var(--card-border);
-    }
-
-    .nav-logo {
-      font-family: 'Syne', sans-serif;
-      font-weight: 800;
-      font-size: 1.4rem;
-      letter-spacing: 0.04em;
-      color: var(--white);
-    }
-    .nav-logo span { color: var(--accent); }
-
-    .nav-links {
-      display: flex;
-      gap: 2rem;
-      list-style: none;
-    }
-    .nav-links a {
-      color: var(--white-dim);
-      text-decoration: none;
-      font-size: 0.9rem;
-      font-weight: 500;
-      transition: color 0.2s;
-    }
-    .nav-links a:hover { color: var(--accent); }
-
-    .nav-cta {
-      background: var(--accent);
-      color: var(--navy-deep) !important;
-      padding: 0.5rem 1.2rem;
-      border-radius: 50px;
-      font-weight: 700 !important;
-      font-size: 0.85rem !important;
-      transition: background 0.2s, transform 0.15s !important;
-    }
-    .nav-cta:hover { background: var(--accent-light) !important; transform: translateY(-1px); color: var(--navy-deep) !important; }
-
-    /* ── HERO ── */
-    .hero {
-      position: relative;
-      min-height: 100vh;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      text-align: center;
-      padding: 8rem 5% 6rem;
+    html, body {
+      height: 100%; width: 100%;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: var(--bg);
+      color: var(--text);
       overflow: hidden;
     }
 
-    /* Radial glow blobs */
-    .hero::after {
-      content: '';
-      position: absolute;
-      width: 700px; height: 700px;
+    #app {
+      height: 100%; width: 100%;
+      display: flex; flex-direction: column;
+      position: relative; overflow: hidden;
+    }
+
+    /* ── SCREENS ── */
+    .screen {
+      display: none; flex-direction: column;
+      flex: 1; overflow-y: auto; overflow-x: hidden;
+      padding-bottom: calc(70px + var(--safe-bot));
+    }
+    .screen.active { display: flex; }
+
+    /* ── SPLASH ── */
+    #splash {
+      background: linear-gradient(160deg, #0D47A1, #082F6E, #051E4A);
+      align-items: center; justify-content: center;
+      padding-bottom: 0 !important;
+    }
+    .splash-logo {
+      width: 110px; height: 110px;
       border-radius: 50%;
-      background: radial-gradient(circle, rgba(21,101,192,0.35) 0%, transparent 70%);
-      top: -150px; left: 50%;
-      transform: translateX(-50%);
-      pointer-events: none;
-      animation: pulse-glow 6s ease-in-out infinite;
-    }
-
-    @keyframes pulse-glow {
-      0%, 100% { opacity: 0.7; transform: translateX(-50%) scale(1); }
-      50% { opacity: 1; transform: translateX(-50%) scale(1.08); }
-    }
-
-    .hero-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.5rem;
-      background: rgba(66,165,245,0.12);
-      border: 1px solid rgba(66,165,245,0.3);
-      border-radius: 50px;
-      padding: 0.35rem 1rem;
-      font-size: 0.78rem;
-      font-weight: 500;
-      color: var(--accent);
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      margin-bottom: 1.8rem;
-      animation: fade-up 0.7s ease both;
-    }
-    .hero-badge::before {
-      content: '';
-      width: 6px; height: 6px;
-      border-radius: 50%;
-      background: var(--accent);
-      animation: blink 1.4s ease-in-out infinite;
-    }
-    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.2} }
-
-    h1 {
-      font-family: 'Syne', sans-serif;
-      font-weight: 800;
-      font-size: clamp(2.8rem, 7vw, 5.5rem);
-      line-height: 1.05;
-      letter-spacing: -0.02em;
-      max-width: 820px;
-      animation: fade-up 0.8s 0.1s ease both;
-    }
-
-    h1 .line-accent {
-      background: linear-gradient(90deg, var(--accent) 0%, #64B5F6 60%, var(--accent-light) 100%);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      background-clip: text;
-    }
-
-    .hero-sub {
-      margin-top: 1.4rem;
-      font-size: clamp(1rem, 2.2vw, 1.2rem);
-      color: var(--white-dim);
-      max-width: 540px;
-      line-height: 1.65;
-      font-weight: 300;
-      animation: fade-up 0.8s 0.2s ease both;
-    }
-
-    .hero-actions {
-      display: flex;
-      gap: 1rem;
-      margin-top: 2.8rem;
-      flex-wrap: wrap;
-      justify-content: center;
-      animation: fade-up 0.8s 0.3s ease both;
-    }
-
-    .btn-primary {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.6rem;
-      background: var(--accent);
-      color: var(--navy-deep);
-      font-family: 'Syne', sans-serif;
-      font-weight: 700;
-      font-size: 1rem;
-      padding: 0.85rem 2rem;
-      border-radius: 50px;
-      text-decoration: none;
-      transition: transform 0.2s, box-shadow 0.2s, background 0.2s;
-      box-shadow: 0 0 30px rgba(66,165,245,0.35);
-    }
-    .btn-primary:hover {
-      transform: translateY(-3px);
-      box-shadow: 0 0 50px rgba(66,165,245,0.55);
-      background: #64B5F6;
-    }
-
-    .btn-secondary {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.6rem;
-      background: transparent;
-      color: var(--white);
-      font-family: 'Syne', sans-serif;
-      font-weight: 600;
-      font-size: 1rem;
-      padding: 0.85rem 2rem;
-      border-radius: 50px;
-      border: 1px solid var(--card-border);
-      text-decoration: none;
-      transition: background 0.2s, border-color 0.2s, transform 0.2s;
-    }
-    .btn-secondary:hover {
-      background: var(--white-faint);
-      border-color: var(--accent);
-      transform: translateY(-3px);
-    }
-
-    /* Scroll indicator */
-    .scroll-hint {
-      position: absolute;
-      bottom: 2.5rem;
-      left: 50%;
-      transform: translateX(-50%);
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 0.4rem;
-      color: var(--white-dim);
-      font-size: 0.72rem;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-      animation: fade-up 1s 0.6s ease both;
-    }
-    .scroll-arrow {
-      width: 22px; height: 22px;
-      border-right: 2px solid var(--accent);
-      border-bottom: 2px solid var(--accent);
-      transform: rotate(45deg);
-      animation: bounce-arrow 1.5s ease-in-out infinite;
-    }
-    @keyframes bounce-arrow {
-      0%,100%{transform:rotate(45deg) translateY(0)} 50%{transform:rotate(45deg) translateY(5px)}
-    }
-
-    /* ── STATS STRIP ── */
-    .stats-strip {
-      position: relative;
-      z-index: 1;
-      display: flex;
-      justify-content: center;
-      gap: 0;
-      padding: 0 5%;
-      margin-top: -1rem;
-      flex-wrap: wrap;
-    }
-
-    .stat-item {
-      flex: 1;
-      min-width: 140px;
-      max-width: 220px;
-      text-align: center;
-      padding: 2rem 1rem;
-      border-right: 1px solid var(--card-border);
-      animation: fade-up 0.8s ease both;
-    }
-    .stat-item:last-child { border-right: none; }
-
-    .stat-number {
-      font-family: 'Syne', sans-serif;
-      font-weight: 800;
-      font-size: 2.4rem;
-      color: var(--accent);
-      line-height: 1;
-    }
-    .stat-label {
-      font-size: 0.82rem;
-      color: var(--white-dim);
-      margin-top: 0.4rem;
-      font-weight: 300;
-    }
-
-    /* ── SECTIONS ── */
-    section {
-      position: relative;
-      z-index: 1;
-      padding: 6rem 5%;
-      max-width: 1200px;
-      margin: 0 auto;
-    }
-
-    .section-label {
-      display: inline-block;
-      font-size: 0.72rem;
-      font-weight: 700;
-      letter-spacing: 0.15em;
-      text-transform: uppercase;
-      color: var(--accent);
-      margin-bottom: 1rem;
-    }
-
-    h2 {
-      font-family: 'Syne', sans-serif;
-      font-weight: 700;
-      font-size: clamp(1.8rem, 4vw, 2.8rem);
-      line-height: 1.15;
-      letter-spacing: -0.01em;
-      max-width: 560px;
-    }
-
-    .section-intro {
-      color: var(--white-dim);
-      font-size: 1rem;
-      line-height: 1.7;
-      max-width: 500px;
-      margin-top: 0.8rem;
-      font-weight: 300;
-    }
-
-    /* ── FEATURES GRID ── */
-    .features-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-end;
-      gap: 2rem;
-      flex-wrap: wrap;
-      margin-bottom: 3rem;
-    }
-
-    .features-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-      gap: 1.2rem;
-    }
-
-    .feature-card {
-      background: var(--card-bg);
-      border: 1px solid var(--card-border);
-      border-radius: 16px;
-      padding: 2rem;
-      transition: transform 0.25s, border-color 0.25s, box-shadow 0.25s;
-      position: relative;
-      overflow: hidden;
-    }
-    .feature-card::before {
-      content: '';
-      position: absolute;
-      top: 0; left: 0; right: 0;
-      height: 2px;
-      background: linear-gradient(90deg, transparent, var(--accent), transparent);
-      opacity: 0;
-      transition: opacity 0.3s;
-    }
-    .feature-card:hover {
-      transform: translateY(-6px);
-      border-color: rgba(66,165,245,0.4);
-      box-shadow: 0 20px 50px rgba(0,0,0,0.4);
-    }
-    .feature-card:hover::before { opacity: 1; }
-
-    .feature-icon {
-      font-size: 2rem;
-      margin-bottom: 1.1rem;
-      display: block;
-    }
-
-    .feature-title {
-      font-family: 'Syne', sans-serif;
-      font-weight: 700;
-      font-size: 1.05rem;
-      margin-bottom: 0.5rem;
-    }
-
-    .feature-desc {
-      color: var(--white-dim);
-      font-size: 0.88rem;
-      line-height: 1.65;
-      font-weight: 300;
-    }
-
-    /* ── PHONE MOCKUP SECTION ── */
-    .showcase {
-      display: flex;
-      align-items: center;
-      gap: 5rem;
-      flex-wrap: wrap;
-    }
-
-    .showcase-text { flex: 1; min-width: 260px; }
-    .showcase-visual { flex: 1; min-width: 260px; display: flex; justify-content: center; }
-
-    .phone-mockup {
-      width: 240px;
-      height: 490px;
-      border-radius: 36px;
-      border: 2px solid rgba(66,165,245,0.25);
-      background: linear-gradient(160deg, #0D47A1 0%, #0D1B4B 60%, #080F2D 100%);
-      position: relative;
-      box-shadow: 0 40px 80px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.04);
-      overflow: hidden;
-      animation: float 4s ease-in-out infinite;
-    }
-    @keyframes float {
-      0%,100%{transform:translateY(0)} 50%{transform:translateY(-14px)}
-    }
-
-    .phone-notch {
-      width: 90px; height: 22px;
-      background: #080F2D;
-      border-radius: 0 0 14px 14px;
-      margin: 0 auto;
-      position: relative;
-      z-index: 2;
-    }
-    .phone-screen {
-      padding: 1.2rem 1rem;
-      height: calc(100% - 22px);
-    }
-    .phone-row {
-      background: rgba(255,255,255,0.06);
-      border-radius: 10px;
-      padding: 0.7rem 0.8rem;
-      margin-bottom: 0.6rem;
-      font-size: 0.68rem;
-      color: rgba(255,255,255,0.75);
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-    }
-    .phone-row .dot {
-      width: 8px; height: 8px; border-radius: 50%;
-      background: var(--accent); flex-shrink: 0;
-    }
-    .phone-row.active {
-      background: rgba(66,165,245,0.15);
-      border: 1px solid rgba(66,165,245,0.3);
-    }
-    .phone-header {
-      font-family: 'Syne', sans-serif;
-      font-size: 0.9rem;
-      font-weight: 700;
-      color: var(--white);
-      margin-bottom: 1rem;
-    }
-    .phone-badge {
-      display: inline-block;
-      background: rgba(66,165,245,0.2);
-      border-radius: 50px;
-      padding: 0.18rem 0.6rem;
-      font-size: 0.6rem;
-      color: var(--accent);
-      font-weight: 600;
-      margin-left: auto;
-    }
-
-    /* SECOND MOCKUP (offset) */
-    .phone-mockup-2 {
-      width: 200px;
-      height: 410px;
-      border-radius: 30px;
-      border: 2px solid rgba(66,165,245,0.15);
-      background: linear-gradient(160deg, #1A237E 0%, #0D1B4B 100%);
-      position: absolute;
-      right: -60px;
-      top: 60px;
-      box-shadow: 0 30px 60px rgba(0,0,0,0.4);
-      animation: float 4s 1.5s ease-in-out infinite;
-      overflow: hidden;
-    }
-
-    .phones-container {
-      position: relative;
-      width: 240px;
-      height: 520px;
-    }
-
-    /* ── HOW IT WORKS ── */
-    .steps {
-      display: flex;
-      flex-direction: column;
-      gap: 0;
-      position: relative;
-    }
-    .steps::before {
-      content: '';
-      position: absolute;
-      left: 24px;
-      top: 40px;
-      bottom: 40px;
-      width: 1px;
-      background: linear-gradient(to bottom, var(--accent), transparent);
-    }
-
-    .step {
-      display: flex;
-      gap: 2rem;
-      align-items: flex-start;
-      padding: 1.5rem 0;
-    }
-    .step-num {
-      width: 48px; height: 48px;
-      flex-shrink: 0;
-      border-radius: 50%;
-      background: var(--blue);
-      border: 2px solid var(--accent);
+      background: rgba(255,255,255,0.12);
+      border: 2px solid rgba(255,255,255,0.3);
       display: flex; align-items: center; justify-content: center;
-      font-family: 'Syne', sans-serif;
-      font-weight: 800;
-      font-size: 1rem;
-      color: var(--accent);
-      position: relative;
-      z-index: 1;
+      font-size: 52px; margin-bottom: 28px;
+      box-shadow: 0 0 40px rgba(0,188,212,0.4);
+      animation: pulse 2s ease-in-out infinite;
     }
-    .step-content h3 {
-      font-family: 'Syne', sans-serif;
-      font-weight: 700;
-      font-size: 1.05rem;
-      margin-bottom: 0.3rem;
+    @keyframes pulse {
+      0%,100%{transform:scale(1)} 50%{transform:scale(1.05)}
     }
-    .step-content p {
-      color: var(--white-dim);
-      font-size: 0.88rem;
-      line-height: 1.6;
-      font-weight: 300;
+    .splash-title {
+      font-size: 48px; font-weight: 800;
+      color: #fff; letter-spacing: 8px;
+      margin-bottom: 8px;
+    }
+    .splash-line {
+      width: 60px; height: 3px;
+      background: var(--cyan);
+      border-radius: 2px; margin: 0 auto 12px;
+    }
+    .splash-sub {
+      font-size: 13px; color: rgba(255,255,255,0.7);
+      letter-spacing: 1.5px; text-align: center;
     }
 
-    /* ── SCREENSHOTS ── */
-    .screenshots-row {
-      display: flex;
-      gap: 1.5rem;
-      justify-content: center;
+    /* ── AUTH SCREENS ── */
+    #login, #register {
+      background: linear-gradient(160deg, #0D47A1, #082F6E);
+      padding: 0 !important; justify-content: center;
+    }
+    .auth-card {
+      background: white;
+      margin: 24px 20px;
+      border-radius: 24px;
+      padding: 32px 24px;
+      box-shadow: 0 20px 60px rgba(13,71,161,0.3);
+    }
+    .auth-logo {
+      text-align: center; margin-bottom: 24px;
+    }
+    .auth-logo .logo-icon {
+      font-size: 40px; display: block; margin-bottom: 8px;
+    }
+    .auth-logo h1 {
+      font-size: 28px; font-weight: 800;
+      color: var(--navy); letter-spacing: 4px;
+    }
+    .auth-logo p {
+      font-size: 12px; color: var(--muted); margin-top: 4px;
+    }
+    .auth-card h2 {
+      font-size: 20px; font-weight: 700;
+      color: var(--navy); margin-bottom: 20px;
+    }
+    .field { margin-bottom: 14px; }
+    .field label {
+      display: block; font-size: 12px;
+      font-weight: 600; color: var(--muted);
+      margin-bottom: 6px; letter-spacing: 0.5px;
+    }
+    .field input, .field select, .field textarea {
+      width: 100%; padding: 12px 14px;
+      border: 1.5px solid var(--border);
+      border-radius: 12px; font-size: 15px;
+      color: var(--text); background: var(--bg);
+      outline: none; transition: border-color 0.2s;
+      -webkit-appearance: none;
+    }
+    .field input:focus, .field select:focus, .field textarea:focus {
+      border-color: var(--navy);
+    }
+    .field textarea { resize: none; min-height: 80px; }
+    .btn {
+      width: 100%; padding: 14px;
+      background: var(--navy); color: white;
+      border: none; border-radius: 12px;
+      font-size: 16px; font-weight: 700;
+      cursor: pointer; margin-top: 6px;
+      transition: opacity 0.2s;
+    }
+    .btn:disabled { opacity: 0.6; }
+    .btn-secondary {
+      background: transparent; color: var(--navy);
+      border: 1.5px solid var(--border);
+      margin-top: 10px;
+    }
+    .auth-switch {
+      text-align: center; margin-top: 16px;
+      font-size: 13px; color: var(--muted);
+    }
+    .auth-switch a {
+      color: var(--navy); font-weight: 700;
+      text-decoration: none;
+    }
+
+    /* ── HEADER ── */
+    .screen-header {
+      background: linear-gradient(135deg, var(--navy), var(--blue));
+      padding: calc(var(--safe-top) + 16px) 20px 20px;
+      color: white; flex-shrink: 0;
+    }
+    .screen-header h2 {
+      font-size: 22px; font-weight: 800;
+    }
+    .screen-header p {
+      font-size: 13px; opacity: 0.8; margin-top: 2px;
+    }
+
+    /* ── DASHBOARD ── */
+    .dashboard-header {
+      background: linear-gradient(160deg, #0D47A1, #082F6E);
+      padding: calc(var(--safe-top) + 20px) 20px 30px;
+      color: white;
+    }
+    .dashboard-greeting { font-size: 14px; opacity: 0.8; }
+    .dashboard-name {
+      font-size: 24px; font-weight: 800;
+      margin: 4px 0 16px;
+    }
+    .pickup-card {
+      background: rgba(255,255,255,0.15);
+      border: 1px solid rgba(255,255,255,0.25);
+      border-radius: 14px; padding: 14px 16px;
+      display: flex; align-items: center;
+      justify-content: space-between;
+    }
+    .pickup-label { font-size: 11px; opacity: 0.8; letter-spacing: 1px; }
+    .pickup-id {
+      font-size: 32px; font-weight: 900;
+      letter-spacing: 6px; color: var(--cyan);
+    }
+    .pickup-copy {
+      background: rgba(255,255,255,0.2);
+      border: none; color: white;
+      padding: 8px 12px; border-radius: 8px;
+      font-size: 12px; cursor: pointer;
+    }
+    .dash-grid {
+      display: grid; grid-template-columns: 1fr 1fr;
+      gap: 12px; padding: 20px 16px 8px;
+    }
+    .dash-tile {
+      background: white;
+      border-radius: var(--radius);
+      padding: 18px 14px;
+      box-shadow: 0 2px 12px rgba(13,71,161,0.08);
+      cursor: pointer; transition: transform 0.15s;
+      text-align: center;
+      border: 1.5px solid var(--border);
+    }
+    .dash-tile:active { transform: scale(0.97); }
+    .dash-tile .tile-icon { font-size: 28px; margin-bottom: 8px; }
+    .dash-tile .tile-label {
+      font-size: 12px; font-weight: 700;
+      color: var(--navy); letter-spacing: 0.3px;
+    }
+    .dash-tile .tile-count {
+      font-size: 20px; font-weight: 900;
+      color: var(--navy); margin-bottom: 4px;
+    }
+
+    /* ── CONTENT AREA ── */
+    .screen-content { padding: 16px; flex: 1; }
+
+    /* ── CARDS ── */
+    .booking-card, .lf-card, .notif-card, .report-card {
+      background: white;
+      border-radius: var(--radius);
+      padding: 16px;
+      margin-bottom: 12px;
+      box-shadow: 0 2px 12px rgba(13,71,161,0.06);
+      border: 1.5px solid var(--border);
+    }
+    .booking-header {
+      display: flex; justify-content: space-between;
+      align-items: center; margin-bottom: 10px;
+    }
+    .pickup-badge {
+      background: var(--navy); color: white;
+      padding: 4px 10px; border-radius: 20px;
+      font-size: 13px; font-weight: 800;
+      letter-spacing: 2px;
+    }
+    .status-badge {
+      padding: 4px 10px; border-radius: 20px;
+      font-size: 11px; font-weight: 700;
+    }
+    .status-0 { background: #FFF8E1; color: #F57F17; }
+    .status-1 { background: #E1F5FE; color: #0288D1; }
+    .status-2 { background: #E8F5E9; color: #2E7D32; }
+    .status-3 { background: #E8F5E9; color: #2E7D32; }
+    .status-4 { background: #E8F5E9; color: #1B5E20; }
+    .status-5 { background: #FFEBEE; color: #C62828; }
+    .booking-route {
+      display: flex; align-items: center;
+      gap: 8px; font-size: 14px; font-weight: 600;
+      color: var(--text); margin-bottom: 8px;
       flex-wrap: wrap;
     }
+    .route-arrow { color: var(--muted); }
+    .booking-meta { font-size: 11px; color: var(--muted); }
 
-    .screenshot-card {
-      width: 170px;
-      height: 320px;
-      border-radius: 22px;
-      border: 1px solid var(--card-border);
-      background: var(--card-bg);
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      gap: 0.6rem;
-      color: var(--white-dim);
-      font-size: 0.75rem;
-      transition: transform 0.3s, border-color 0.3s;
-      position: relative;
-      overflow: hidden;
+    /* ── RADIO GROUPS ── */
+    .radio-group {
+      display: flex; gap: 10px; margin-bottom: 14px;
     }
-    .screenshot-card:nth-child(even) { transform: translateY(20px); }
-    .screenshot-card:hover { transform: translateY(-8px) !important; border-color: var(--accent); }
-
-    .screenshot-label {
-      position: absolute;
-      bottom: 1rem;
-      font-size: 0.7rem;
-      font-weight: 500;
-      color: var(--accent);
-      background: rgba(66,165,245,0.1);
-      padding: 0.2rem 0.6rem;
-      border-radius: 50px;
+    .radio-option {
+      flex: 1; padding: 10px;
+      border: 1.5px solid var(--border);
+      border-radius: 10px; text-align: center;
+      cursor: pointer; font-size: 13px;
+      font-weight: 600; color: var(--muted);
+      transition: all 0.2s;
     }
-    .screenshot-icon { font-size: 2.5rem; opacity: 0.4; }
-
-    /* ── DOWNLOAD CTA ── */
-    .download-section {
-      text-align: center;
-      padding: 6rem 5%;
-      position: relative;
-      z-index: 1;
+    .radio-option input { display: none; }
+    .radio-option.selected {
+      border-color: var(--navy);
+      background: #E3F2FD; color: var(--navy);
     }
 
-    .download-box {
-      max-width: 700px;
-      margin: 0 auto;
-      background: linear-gradient(135deg, rgba(21,101,192,0.25) 0%, rgba(13,27,75,0.8) 100%);
-      border: 1px solid rgba(66,165,245,0.25);
-      border-radius: 28px;
-      padding: 4rem 3rem;
-      position: relative;
-      overflow: hidden;
+    /* ── LOST & FOUND ── */
+    .lf-lost { border-left: 4px solid var(--red); }
+    .lf-found { border-left: 4px solid var(--green); }
+    .lf-type { font-size: 11px; font-weight: 700; margin-bottom: 4px; }
+    .lf-title { font-size: 15px; font-weight: 700; color: var(--text); margin-bottom: 4px; }
+    .lf-desc { font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+    .lf-meta { font-size: 11px; color: var(--muted); }
+
+    /* ── NOTIFICATIONS ── */
+    .notif-unread { border-left: 4px solid var(--navy); }
+    .notif-title { font-size: 14px; font-weight: 700; margin-bottom: 4px; }
+    .notif-body { font-size: 13px; color: var(--muted); }
+
+    /* ── REPORTS ── */
+    .report-header {
+      display: flex; justify-content: space-between;
+      align-items: center; margin-bottom: 8px;
     }
-    .download-box::before {
-      content: '';
-      position: absolute;
-      top: -60px; right: -60px;
-      width: 240px; height: 240px;
-      border-radius: 50%;
-      background: radial-gradient(circle, rgba(66,165,245,0.15), transparent 70%);
+    .report-subject { font-size: 14px; font-weight: 700; }
+    .report-status-open { color: var(--amber); font-size: 11px; font-weight: 700; }
+    .report-body { font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+    .report-reply {
+      font-size: 12px; color: var(--green);
+      background: #E8F5E9; padding: 8px 10px;
+      border-radius: 8px; margin-top: 8px;
+    }
+
+    /* ── PUZZLE ── */
+    .puzzle-card {
+      background: white; border-radius: var(--radius);
+      padding: 24px; margin: 16px;
+      box-shadow: 0 4px 20px rgba(13,71,161,0.1);
+      border: 1.5px solid var(--border);
+    }
+    .puzzle-score {
+      font-size: 13px; font-weight: 700;
+      color: var(--cyan); text-align: right;
+      margin-bottom: 16px;
+    }
+    .puzzle-q {
+      font-size: 17px; font-weight: 700;
+      color: var(--navy); line-height: 1.4;
+      margin-bottom: 20px;
+    }
+    .puzzle-hint {
+      font-size: 13px; color: var(--amber);
+      background: #FFF8E1; padding: 10px 12px;
+      border-radius: 10px; margin-bottom: 14px;
+      display: none;
+    }
+    .puzzle-result {
+      font-size: 14px; font-weight: 700;
+      padding: 10px; border-radius: 10px;
+      text-align: center; margin-top: 10px;
+    }
+    .puzzle-result.correct { background: #E8F5E9; color: var(--green); }
+    .puzzle-result.wrong   { background: #FFEBEE; color: var(--red); }
+    .puzzle-btns { display: flex; gap: 10px; margin-top: 14px; }
+    .puzzle-btns .btn { margin-top: 0; }
+
+    /* ── FAB ── */
+    .fab {
+      position: fixed; bottom: calc(80px + var(--safe-bot));
+      right: 20px; width: 56px; height: 56px;
+      background: var(--navy); color: white;
+      border: none; border-radius: 50%;
+      font-size: 24px; cursor: pointer;
+      box-shadow: 0 4px 16px rgba(13,71,161,0.4);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 50;
+    }
+
+    /* ── BOTTOM NAV ── */
+    #bottom-nav {
+      position: fixed; bottom: 0; left: 0; right: 0;
+      background: white;
+      border-top: 1px solid var(--border);
+      padding: 8px 0 calc(8px + var(--safe-bot));
+      display: none; justify-content: space-around;
+      z-index: 100;
+    }
+    .nav-item {
+      display: flex; flex-direction: column;
+      align-items: center; gap: 3px;
+      cursor: pointer; padding: 4px 12px;
+      border-radius: 10px; transition: all 0.15s;
+      background: none; border: none;
+    }
+    .nav-item .nav-icon { font-size: 22px; }
+    .nav-item .nav-label {
+      font-size: 10px; font-weight: 600;
+      color: var(--muted);
+    }
+    .nav-item.active .nav-label { color: var(--navy); }
+    .nav-item.active .nav-icon { filter: none; }
+
+    /* ── TOAST ── */
+    #toast {
+      position: fixed; bottom: calc(90px + var(--safe-bot));
+      left: 50%; transform: translateX(-50%) translateY(20px);
+      background: #1A1A2E; color: white;
+      padding: 12px 20px; border-radius: 20px;
+      font-size: 13px; font-weight: 600;
+      opacity: 0; transition: all 0.3s;
+      white-space: nowrap; z-index: 200;
       pointer-events: none;
     }
+    #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
-    .download-box h2 { max-width: 100%; margin-bottom: 1rem; font-size: clamp(1.6rem, 3.5vw, 2.4rem); }
-    .download-box p { color: var(--white-dim); font-size: 1rem; line-height: 1.65; font-weight: 300; margin-bottom: 2rem; }
-
-    .version-tag {
-      display: inline-block;
-      font-size: 0.75rem;
-      font-weight: 500;
-      color: var(--accent-light);
-      background: rgba(66,165,245,0.1);
-      border-radius: 50px;
-      padding: 0.25rem 0.8rem;
-      margin-top: 1.2rem;
+    /* ── UTILS ── */
+    .loading, .empty-state {
+      text-align: center; padding: 40px 20px;
+      color: var(--muted); font-size: 14px;
+      line-height: 1.6;
     }
-
-    /* ── FOOTER ── */
-    footer {
-      position: relative;
-      z-index: 1;
-      border-top: 1px solid var(--card-border);
-      padding: 2.5rem 5%;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      flex-wrap: wrap;
-      gap: 1rem;
+    .loading::before { content: '⏳ '; }
+    .section-title {
+      font-size: 13px; font-weight: 700;
+      color: var(--muted); letter-spacing: 1px;
+      text-transform: uppercase;
+      padding: 16px 16px 8px;
     }
-
-    .footer-logo {
-      font-family: 'Syne', sans-serif;
-      font-weight: 800;
-      font-size: 1.1rem;
-      color: var(--white);
+    .form-section {
+      background: white; margin: 0 16px 16px;
+      border-radius: var(--radius); padding: 16px;
+      border: 1.5px solid var(--border);
     }
-    .footer-logo span { color: var(--accent); }
-
-    footer p {
-      color: var(--white-dim);
-      font-size: 0.82rem;
-      font-weight: 300;
-    }
-
-    .footer-links {
-      display: flex;
-      gap: 1.5rem;
-      list-style: none;
-    }
-    .footer-links a {
-      color: var(--white-dim);
-      text-decoration: none;
-      font-size: 0.82rem;
-      transition: color 0.2s;
-    }
-    .footer-links a:hover { color: var(--accent); }
-
-    /* ── ANIMATIONS ── */
-    @keyframes fade-up {
-      from { opacity: 0; transform: translateY(24px); }
-      to   { opacity: 1; transform: translateY(0); }
-    }
-
-    .reveal {
-      opacity: 0;
-      transform: translateY(30px);
-      transition: opacity 0.7s ease, transform 0.7s ease;
-    }
-    .reveal.visible {
-      opacity: 1;
-      transform: translateY(0);
-    }
-
-    /* ── RESPONSIVE ── */
-    @media (max-width: 768px) {
-      .nav-links { display: none; }
-      .stats-strip { gap: 0; }
-      .stat-item { border-right: none; border-bottom: 1px solid var(--card-border); }
-      .stat-item:last-child { border-bottom: none; }
-      .showcase { gap: 3rem; }
-      .phones-container { margin: 0 auto; }
-      .phone-mockup-2 { display: none; }
+    .form-section h3 {
+      font-size: 15px; font-weight: 700;
+      color: var(--navy); margin-bottom: 14px;
     }
   </style>
 </head>
 <body>
+<div id="app">
 
-  <!-- NAV -->
-  <nav>
-    <div class="nav-logo">ASSA<span>.</span></div>
-    <ul class="nav-links">
-      <li><a href="#features">Features</a></li>
-      <li><a href="#how-it-works">How It Works</a></li>
-      <li><a href="#screenshots">Screenshots</a></li>
-      <li><a href="#download" class="nav-cta">Download</a></li>
-    </ul>
+  <!-- ── SPLASH ── -->
+  <div id="splash" class="screen active">
+    <div class="splash-logo">🚌</div>
+    <div class="splash-title">ASSA</div>
+    <div class="splash-line"></div>
+    <div class="splash-sub">AFIT Shuttle Service App</div>
+  </div>
+
+  <!-- ── LOGIN ── -->
+  <div id="login" class="screen">
+    <div class="auth-card">
+      <div class="auth-logo">
+        <span class="logo-icon">🚌</span>
+        <h1>ASSA</h1>
+        <p>AFIT Shuttle Service App</p>
+      </div>
+      <h2>Sign In</h2>
+      <div class="field">
+        <label>EMAIL</label>
+        <input id="login-email" type="email" placeholder="your@email.com" autocomplete="email"/>
+      </div>
+      <div class="field">
+        <label>PASSWORD</label>
+        <input id="login-pass" type="password" placeholder="Your password" autocomplete="current-password"/>
+      </div>
+      <button id="login-btn" class="btn" onclick="doLogin()">Sign In</button>
+      <div class="auth-switch">
+        Don't have an account? <a href="#" onclick="showScreen('register')">Register</a>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── REGISTER ── -->
+  <div id="register" class="screen">
+    <div class="auth-card">
+      <div class="auth-logo">
+        <span class="logo-icon">🚌</span>
+        <h1>ASSA</h1>
+        <p>Create your account</p>
+      </div>
+      <h2>Register</h2>
+      <div class="field">
+        <label>FULL NAME</label>
+        <input id="reg-name" type="text" placeholder="Your full name" autocomplete="name"/>
+      </div>
+      <div class="field">
+        <label>EMAIL</label>
+        <input id="reg-email" type="email" placeholder="your@email.com" autocomplete="email"/>
+      </div>
+      <div class="field">
+        <label>PASSWORD</label>
+        <input id="reg-pass" type="password" placeholder="Min 6 characters" autocomplete="new-password"/>
+      </div>
+      <button id="reg-btn" class="btn" onclick="doRegister()">Create Account</button>
+      <div class="auth-switch">
+        Already have an account? <a href="#" onclick="showScreen('login')">Sign In</a>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── DASHBOARD ── -->
+  <div id="dashboard" class="screen">
+    <div class="dashboard-header">
+      <div class="dashboard-greeting">Good day 👋</div>
+      <div class="dashboard-name user-name">Loading...</div>
+      <div class="pickup-card">
+        <div>
+          <div class="pickup-label">YOUR PICKUP ID</div>
+          <div class="pickup-id user-pickup-id">---</div>
+        </div>
+        <button class="pickup-copy" onclick="
+          navigator.clipboard?.writeText(document.querySelector('.user-pickup-id').textContent);
+          showToast('Pickup ID copied!')
+        ">Copy</button>
+      </div>
+    </div>
+    <div class="dash-grid">
+      <div class="dash-tile" onclick="goToRequest()">
+        <div class="tile-icon">🚌</div>
+        <div class="tile-label">Request Ride</div>
+      </div>
+      <div class="dash-tile" onclick="goToBookings()">
+        <div class="tile-icon">📋</div>
+        <div class="tile-count" id="dash-booking-count">0</div>
+        <div class="tile-label">My Bookings</div>
+      </div>
+      <div class="dash-tile" onclick="goToLostFound()">
+        <div class="tile-icon">🔍</div>
+        <div class="tile-label">Lost & Found</div>
+      </div>
+      <div class="dash-tile" onclick="goToNotifications()">
+        <div class="tile-icon">🔔</div>
+        <div class="tile-label">Notifications</div>
+      </div>
+      <div class="dash-tile" onclick="goToSupport()">
+        <div class="tile-icon">💬</div>
+        <div class="tile-label">Support</div>
+      </div>
+      <div class="dash-tile" onclick="goToPuzzle()">
+        <div class="tile-icon">🧩</div>
+        <div class="tile-label">Campus Puzzle</div>
+      </div>
+    </div>
+    <div style="text-align:center; padding: 8px 16px 4px;">
+      <button class="btn btn-secondary" style="width:auto; padding:10px 24px; font-size:13px;" onclick="doLogout()">Sign Out</button>
+    </div>
+  </div>
+
+  <!-- ── REQUEST RIDE ── -->
+  <div id="request" class="screen">
+    <div class="screen-header">
+      <h2>🚌 Request a Ride</h2>
+      <p>Select your pickup and destination</p>
+    </div>
+    <div class="screen-content">
+      <div class="form-section">
+        <h3>Ride Details</h3>
+
+        <div class="field">
+          <label>PICKUP LOCATION</label>
+          <select id="req-pickup"></select>
+        </div>
+
+        <div class="field">
+          <label>DESTINATION</label>
+          <select id="req-dest"></select>
+        </div>
+
+        <div class="field">
+          <label>RIDE TYPE</label>
+          <div class="radio-group">
+            <label class="radio-option selected" id="shared-opt">
+              <input type="radio" name="ride-type" value="shared" checked
+                onchange="document.getElementById('shared-opt').classList.add('selected');
+                          document.getElementById('charter-opt').classList.remove('selected')"/>
+              👥 Shared
+            </label>
+            <label class="radio-option" id="charter-opt">
+              <input type="radio" name="ride-type" value="chartered"
+                onchange="document.getElementById('charter-opt').classList.add('selected');
+                          document.getElementById('shared-opt').classList.remove('selected')"/>
+              🚌 Chartered
+            </label>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>NUMBER OF PASSENGERS</label>
+          <select id="req-pax">
+            <option value="1">1 passenger</option>
+            <option value="2">2 passengers</option>
+            <option value="3">3 passengers</option>
+            <option value="4">4 passengers</option>
+          </select>
+        </div>
+
+        <p style="font-size:12px; color:var(--muted); margin-bottom:14px; line-height:1.5;">
+          💡 Select the drop-off zone closest to your destination. You can bargain the exact drop-off with the driver on arrival.
+        </p>
+
+        <button id="req-btn" class="btn" onclick="submitRequest()">Request Ride</button>
+        <button class="btn btn-secondary" onclick="showScreen('dashboard')">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── BOOKINGS ── -->
+  <div id="bookings" class="screen">
+    <div class="screen-header">
+      <h2>📋 My Bookings</h2>
+      <p>Your ride request history</p>
+    </div>
+    <div class="screen-content">
+      <div id="bookings-list"></div>
+    </div>
+  </div>
+
+  <!-- ── LOST & FOUND ── -->
+  <div id="lostfound" class="screen">
+    <div class="screen-header">
+      <h2>🔍 Lost & Found</h2>
+      <p>Report or find lost items on campus</p>
+    </div>
+    <div class="screen-content">
+      <div id="lf-form" style="display:none;">
+        <div class="form-section">
+          <h3>Post an Item</h3>
+          <div class="field">
+            <label>TYPE</label>
+            <div class="radio-group">
+              <label class="radio-option selected" id="lost-opt">
+                <input type="radio" name="lf-type" value="lost" checked
+                  onchange="document.getElementById('lost-opt').classList.add('selected');
+                            document.getElementById('found-opt').classList.remove('selected')"/>
+                🔴 Lost
+              </label>
+              <label class="radio-option" id="found-opt">
+                <input type="radio" name="lf-type" value="found"
+                  onchange="document.getElementById('found-opt').classList.add('selected');
+                            document.getElementById('lost-opt').classList.remove('selected')"/>
+                🟢 Found
+              </label>
+            </div>
+          </div>
+          <div class="field">
+            <label>ITEM NAME</label>
+            <input id="lf-item" type="text" placeholder="e.g. Blue backpack"/>
+          </div>
+          <div class="field">
+            <label>DESCRIPTION</label>
+            <textarea id="lf-desc" placeholder="Describe the item..."></textarea>
+          </div>
+          <div class="field">
+            <label>LOCATION FOUND/LOST</label>
+            <input id="lf-location" type="text" placeholder="e.g. Alfa Hall, Gate Area"/>
+          </div>
+          <div class="field">
+            <label>YOUR NAME (optional)</label>
+            <input id="lf-contact" type="text" placeholder="How to contact you"/>
+          </div>
+          <button class="btn" onclick="postLostFound()">Post Item</button>
+          <button class="btn btn-secondary" onclick="document.getElementById('lf-form').style.display='none'">Cancel</button>
+        </div>
+      </div>
+      <div id="lf-list"></div>
+    </div>
+    <button class="fab" onclick="document.getElementById('lf-form').style.display='block'; window.scrollTo(0,0)">+</button>
+  </div>
+
+  <!-- ── NOTIFICATIONS ── -->
+  <div id="notifications" class="screen">
+    <div class="screen-header">
+      <h2>🔔 Notifications</h2>
+      <p>Your ride updates and alerts</p>
+    </div>
+    <div class="screen-content">
+      <div id="notif-list"></div>
+    </div>
+  </div>
+
+  <!-- ── SUPPORT ── -->
+  <div id="support" class="screen">
+    <div class="screen-header">
+      <h2>💬 Support</h2>
+      <p>Submit a complaint or get help</p>
+    </div>
+    <div class="screen-content">
+      <div id="rep-form" style="display:none;">
+        <div class="form-section">
+          <h3>New Complaint</h3>
+          <div class="field">
+            <label>SUBJECT</label>
+            <input id="rep-subject" type="text" placeholder="Brief subject"/>
+          </div>
+          <div class="field">
+            <label>MESSAGE</label>
+            <textarea id="rep-message" placeholder="Describe your issue..."></textarea>
+          </div>
+          <button class="btn" onclick="submitReport()">Submit</button>
+          <button class="btn btn-secondary" onclick="document.getElementById('rep-form').style.display='none'">Cancel</button>
+        </div>
+      </div>
+      <div id="report-list"></div>
+    </div>
+    <button class="fab" onclick="document.getElementById('rep-form').style.display='block'; window.scrollTo(0,0)">+</button>
+  </div>
+
+  <!-- ── PUZZLE ── -->
+  <div id="puzzle" class="screen">
+    <div class="screen-header">
+      <h2>🧩 Campus Puzzle</h2>
+      <p>Test your AFIT knowledge</p>
+    </div>
+    <div class="puzzle-card">
+      <div class="puzzle-score" id="puzzle-score">Score: 0</div>
+      <div class="puzzle-q" id="puzzle-question">Loading...</div>
+      <div class="puzzle-hint" id="puzzle-hint"></div>
+      <div class="field">
+        <label>YOUR ANSWER</label>
+        <input id="puzzle-answer" type="text" placeholder="Type your answer..."
+               onkeydown="if(event.key==='Enter') checkAnswer()"/>
+      </div>
+      <div id="puzzle-result" class="puzzle-result"></div>
+      <div class="puzzle-btns">
+        <button class="btn btn-secondary" onclick="showHint()" style="margin-top:0">💡 Hint</button>
+        <button class="btn" onclick="checkAnswer()" style="margin-top:0">Check</button>
+      </div>
+      <button class="btn btn-secondary" onclick="nextPuzzle()" style="margin-top:10px">Next Question →</button>
+    </div>
+  </div>
+
+  <!-- ── BOTTOM NAV ── -->
+  <nav id="bottom-nav">
+    <button class="nav-item active" data-screen="dashboard" onclick="goToDashboard()">
+      <span class="nav-icon">🏠</span>
+      <span class="nav-label">Home</span>
+    </button>
+    <button class="nav-item" data-screen="request" onclick="goToRequest()">
+      <span class="nav-icon">🚌</span>
+      <span class="nav-label">Ride</span>
+    </button>
+    <button class="nav-item" data-screen="bookings" onclick="goToBookings()">
+      <span class="nav-icon">📋</span>
+      <span class="nav-label">Bookings</span>
+    </button>
+    <button class="nav-item" data-screen="notifications" onclick="goToNotifications()">
+      <span class="nav-icon">🔔</span>
+      <span class="nav-label">Alerts</span>
+    </button>
+    <button class="nav-item" data-screen="puzzle" onclick="goToPuzzle()">
+      <span class="nav-icon">🧩</span>
+      <span class="nav-label">Puzzle</span>
+    </button>
   </nav>
 
-  <!-- HERO -->
-  <section class="hero" style="max-width:100%; padding-top:9rem;">
-    <div class="hero-badge">AFIT Campus · Android &amp; iOS</div>
-    <h1>
-      Campus Rides,<br/>
-      <span class="line-accent">Reimagined for AFIT</span>
-    </h1>
-    <p class="hero-sub">
-      ASSA connects AFIT students with campus shuttle drivers in real time — request a ride, track your driver, and get to class on time.
-    </p>
-    <div class="hero-actions">
-      <a href="#download" class="btn-primary">
-        <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
-          <path d="M12 15V3m0 12l-4-4m4 4l4-4M3 21h18"/>
-        </svg>
-        Download for Android
-      </a>
-      <a href="#download" class="btn-secondary">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-          <path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/>
-        </svg>
-        Try on iOS
-      </a>
-    </div>
-    <div class="scroll-hint">
-      <span>Scroll</span>
-      <div class="scroll-arrow"></div>
-    </div>
-  </section>
+  <!-- ── TOAST ── -->
+  <div id="toast"></div>
 
-  <!-- STATS -->
-  <div class="stats-strip">
-    <div class="stat-item reveal">
-      <div class="stat-number">34</div>
-      <div class="stat-label">App Screens</div>
-    </div>
-    <div class="stat-item reveal">
-      <div class="stat-number">3</div>
-      <div class="stat-label">User Roles</div>
-    </div>
-    <div class="stat-item reveal">
-      <div class="stat-number">ESP32</div>
-      <div class="stat-label">IoT Integration</div>
-    </div>
-    <div class="stat-item reveal">
-      <div class="stat-number">100%</div>
-      <div class="stat-label">Offline Ready</div>
-    </div>
-  </div>
-
-  <!-- FEATURES -->
-  <section id="features">
-    <div class="features-header reveal">
-      <div>
-        <span class="section-label">What ASSA Does</span>
-        <h2>Everything your campus shuttle needs</h2>
-        <p class="section-intro">Purpose-built for the AFIT community with real-time tracking, offline support, and smart ride management.</p>
-      </div>
-    </div>
-    <div class="features-grid">
-      <div class="feature-card reveal">
-        <span class="feature-icon">🛺</span>
-        <div class="feature-title">Instant Ride Requests</div>
-        <p class="feature-desc">Request a campus shuttle from any pickup point — AFIT Gate, BK Gate, Old Girls Hostel, Boys Hostel — with one tap.</p>
-      </div>
-      <div class="feature-card reveal">
-        <span class="feature-icon">📶</span>
-        <div class="feature-title">Works Offline</div>
-        <p class="feature-desc">Firestore offline caching keeps the app functional even when your connection drops. Syncs automatically when you're back online.</p>
-      </div>
-      <div class="feature-card reveal">
-        <span class="feature-icon">🔔</span>
-        <div class="feature-title">Push Notifications</div>
-        <p class="feature-desc">Get notified when your driver accepts or arrives via Firebase Cloud Messaging push notifications.</p>
-      </div>
-      <div class="feature-card reveal">
-        <span class="feature-icon">🛰️</span>
-        <div class="feature-title">ESP32 / LoRa IoT</div>
-        <p class="feature-desc">Integrates with on-campus ESP32 hardware via 6-byte binary LoRa packets for real-time shuttle tracking at the hardware level.</p>
-      </div>
-      <div class="feature-card reveal">
-        <span class="feature-icon">🧩</span>
-        <div class="feature-title">Campus Puzzle & Lost & Found</div>
-        <p class="feature-desc">Built-in community features — a daily puzzle game and a lost-and-found board to keep the AFIT community connected.</p>
-      </div>
-
-      <div class="feature-card reveal">
-        <span class="feature-icon">🔐</span>
-        <div class="feature-title">Secure Auth</div>
-        <p class="feature-desc">Email/password and Google Sign-In with verified accounts. Phone OTP authentication is built and ready for when billing is enabled.</p>
-      </div>
-      <div class="feature-card reveal">
-        <span class="feature-icon">💬</span>
-        <div class="feature-title">Support Chat</div>
-        <p class="feature-desc">Submit complaints with live status tracking — Open, In Progress, Resolved. Get updates directly in the app.</p>
-      </div>
-    </div>
-  </section>
-
-  <!-- HOW IT WORKS -->
-  <section id="how-it-works" style="padding-top:2rem;">
-    <div class="showcase">
-      <div class="showcase-text reveal">
-        <span class="section-label">How It Works</span>
-        <h2>From gate to destination in three steps</h2>
-        <p class="section-intro" style="margin-bottom:2.5rem;">Designed for simplicity. Whether you're a student or driver, ASSA fits your workflow.</p>
-
-        <div class="steps">
-          <div class="step">
-            <div class="step-num">1</div>
-            <div class="step-content">
-              <h3>Sign Up or Sign In</h3>
-              <p>Create an account with your email or Google account. Choose your role — Rider or Driver — and you're in.</p>
-            </div>
-          </div>
-          <div class="step">
-            <div class="step-num">2</div>
-            <div class="step-content">
-              <h3>Request Your Ride</h3>
-              <p>Select your pickup location and drop-off. The nearest available driver gets notified instantly.</p>
-            </div>
-          </div>
-          <div class="step">
-            <div class="step-num">3</div>
-            <div class="step-content">
-              <h3>Track & Ride</h3>
-              <p>Follow your driver's status in real time. Get push notifications at every step of the journey.</p>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div class="showcase-visual reveal">
-        <div class="phones-container">
-          <div class="phone-mockup">
-            <div class="phone-notch"></div>
-            <div class="phone-screen">
-              <div class="phone-header">Good morning 👋</div>
-              <div class="phone-row active">
-                <div class="dot"></div>
-                Request a Shuttle
-                <div class="phone-badge">New</div>
-              </div>
-              <div class="phone-row">
-                <div class="dot" style="background:#4CAF50"></div>
-                My Bookings
-              </div>
-              <div class="phone-row">
-                <div class="dot" style="background:#FFA726"></div>
-                Lost &amp; Found
-              </div>
-              <div class="phone-row">
-                <div class="dot" style="background:#AB47BC"></div>
-                Campus Puzzle
-              </div>
-              <div class="phone-row">
-                <div class="dot" style="background:#26C6DA"></div>
-                Notifications
-              </div>
-            </div>
-          </div>
-          <div class="phone-mockup-2">
-            <div class="phone-notch" style="width:70px;height:18px;border-radius:0 0 10px 10px;background:#080F2D;margin:0 auto;"></div>
-            <div class="phone-screen" style="padding:0.8rem;">
-              <div style="font-family:'Syne',sans-serif;font-size:0.75rem;font-weight:700;color:#fff;margin-bottom:0.8rem;">Driver View</div>
-              <div class="phone-row" style="font-size:0.6rem;">
-                <div class="dot" style="background:#4CAF50"></div>
-                Pending Requests (3)
-              </div>
-              <div class="phone-row" style="font-size:0.6rem;">
-                <div class="dot"></div>
-                AFIT Gate → Hostel
-              </div>
-              <div class="phone-row" style="font-size:0.6rem;background:rgba(66,165,245,0.12);border:1px solid rgba(66,165,245,0.2);">
-                <div class="dot"></div>
-                Accept Ride ✓
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- SCREENSHOTS -->
-  <section id="screenshots" style="text-align:center; padding-top:2rem;">
-    <span class="section-label reveal">App Preview</span>
-    <h2 style="max-width:100%; margin:0 auto 1rem; reveal">Screens built for clarity</h2>
-    <p class="section-intro reveal" style="margin:0 auto 3rem;">Clean, intuitive design across all screens — for students and drivers.</p>
-    <div class="screenshots-row">
-      <div class="screenshot-card reveal">
-        <div class="screenshot-icon">🔐</div>
-        <div class="screenshot-label">Login</div>
-      </div>
-      <div class="screenshot-card reveal">
-        <div class="screenshot-icon">🏠</div>
-        <div class="screenshot-label">Dashboard</div>
-      </div>
-      <div class="screenshot-card reveal">
-        <div class="screenshot-icon">🛺</div>
-        <div class="screenshot-label">Request Ride</div>
-      </div>
-      <div class="screenshot-card reveal">
-        <div class="screenshot-icon">📋</div>
-        <div class="screenshot-label">My Bookings</div>
-      </div>
-
-    </div>
-    <p style="color:var(--white-dim); font-size:0.8rem; margin-top:2rem; font-style:italic; font-weight:300;">Screenshots coming soon — app is in active development</p>
-  </section>
-
-  <!-- DOWNLOAD -->
-  <div class="download-section" id="download">
-    <span class="section-label reveal" style="display:block; text-align:center; margin-bottom:0.8rem;">Get ASSA</span>
-    <h2 style="text-align:center; max-width:100%; margin:0 auto 0.6rem; font-family:'Syne',sans-serif; font-weight:700; font-size:clamp(1.8rem,4vw,2.8rem);">Available on Android &amp; iOS</h2>
-    <p style="text-align:center; color:var(--white-dim); font-size:1rem; font-weight:300; max-width:480px; margin:0 auto 2.5rem;">
-      Download the APK directly for Android, or try the live iOS preview in your browser — no iPhone needed.
-    </p>
-
-    <div style="display:flex; gap:1.5rem; justify-content:center; flex-wrap:wrap; max-width:900px; margin:0 auto;">
-
-      <!-- Android Card -->
-      <div class="download-box reveal" style="flex:1; min-width:280px; max-width:400px;">
-        <div style="display:flex; align-items:center; gap:0.8rem; margin-bottom:1.2rem; justify-content:center;">
-          <svg width="32" height="32" viewBox="0 0 24 24" fill="#42A5F5">
-            <path d="M6 18c0 .55.45 1 1 1h1v3.5c0 .83.67 1.5 1.5 1.5s1.5-.67 1.5-1.5V19h2v3.5c0 .83.67 1.5 1.5 1.5s1.5-.67 1.5-1.5V19h1c.55 0 1-.45 1-1V8H6v10zm-2.5-1C2.67 17 2 17.67 2 18.5v3c0 .83.67 1.5 1.5 1.5S5 22.33 5 21.5v-3C5 17.67 4.33 17 3.5 17zm17 0c-.83 0-1.5.67-1.5 1.5v3c0 .83.67 1.5 1.5 1.5s1.5-.67 1.5-1.5v-3c0-.83-.67-1.5-1.5-1.5zm-4.97-15.51l1.3-1.3c.2-.2.2-.51 0-.71-.2-.2-.51-.2-.71 0l-1.48 1.48A5.84 5.84 0 0012 1c-.96 0-1.86.23-2.66.64L7.85.16c-.2-.2-.51-.2-.71 0-.2.2-.2.51 0 .71l1.31 1.31A5.98 5.98 0 006 7h12a5.98 5.98 0 00-2.47-5.51zM10 5H9V4h1v1zm5 0h-1V4h1v1z"/>
-          </svg>
-          <span style="font-family:'Syne',sans-serif; font-weight:700; font-size:1.3rem; color:var(--white);">Android</span>
-        </div>
-        <span class="section-label" style="display:block; text-align:center; margin-bottom:0.8rem;">Direct APK Download</span>
-        <p style="color:var(--white-dim); font-size:0.9rem; font-weight:300; text-align:center; margin-bottom:1.5rem;">
-          Download and install directly on any Android phone running Android 5.0 or above.
-        </p>
-        <a href="https://github.com/aminuabdulrahman321-dot/assa/releases/latest/download/app-release.apk"
-           class="btn-primary" style="display:inline-flex; margin:0 auto;">
-          <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
-            <path d="M12 15V3m0 12l-4-4m4 4l4-4M3 21h18"/>
-          </svg>
-          Download APK
-        </a>
-        <div class="version-tag" style="display:block; margin:1rem auto 0;">Android · APK · v1.0 Prototype</div>
-        <p style="font-size:0.75rem; margin-top:1rem; color:rgba(248,250,255,0.35); text-align:center;">
-          Enable "Install from unknown sources" in Android settings before installing.
-        </p>
-      </div>
-
-      <!-- iOS Card -->
-      <div class="download-box reveal" style="flex:1; min-width:280px; max-width:400px; border-color:rgba(66,165,245,0.15);">
-        <div style="display:flex; align-items:center; gap:0.8rem; margin-bottom:1.2rem; justify-content:center;">
-          <svg width="30" height="30" viewBox="0 0 24 24" fill="#90CAF9">
-            <path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/>
-          </svg>
-          <span style="font-family:'Syne',sans-serif; font-weight:700; font-size:1.3rem; color:var(--white);">iOS</span>
-        </div>
-        <span class="section-label" style="display:block; text-align:center; margin-bottom:0.8rem;">Browser Preview</span>
-        <p style="color:var(--white-dim); font-size:0.9rem; font-weight:300; text-align:center; margin-bottom:1.5rem;">
-          Try ASSA on an iPhone simulator directly in your browser — no iPhone or Mac required.
-        </p>
-        <a href="https://aminuabdulrahman321-dot.github.io/assa/app/"
-           class="btn-secondary" style="display:inline-flex; margin:0 auto; border-color:rgba(144,202,249,0.4); color:var(--accent-light);">
-          <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-            <path d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/>
-          </svg>
-          Use Web App
-        </a>
-        <div class="version-tag" style="display:block; margin:1rem auto 0; background:rgba(144,202,249,0.1); color:var(--accent-light);">iOS App Store · Coming Soon</div>
-        <p style="font-size:0.75rem; margin-top:1rem; color:rgba(248,250,255,0.35); text-align:center;">
-          Native iOS app is in development. Use the web app via Safari — tap Share → Add to Home Screen for the full experience.
-        </p>
-      </div>
-
-    </div>
-
-    <!-- QR hint -->
-    <p style="text-align:center; color:rgba(248,250,255,0.3); font-size:0.8rem; margin-top:2rem; font-weight:300;">
-      AFIT students · Scan the QR code at the shuttle stand to download instantly
-    </p>
-  </div>
-
-  <!-- FOOTER -->
-  <footer>
-    <div class="footer-logo">ASSA<span>.</span></div>
-    <p>© 2026 AFIT Shuttle Service App · Built at Air Force Institute of Technology, Kaduna</p>
-    <ul class="footer-links">
-      <li><a href="https://github.com/aminuabdulrahman321-dot/assa" target="_blank">GitHub</a></li>
-      <li><a href="#features">Features</a></li>
-      <li><a href="#download">Download</a></li>
-    </ul>
-  </footer>
-
-  <script>
-    // Scroll reveal
-    const reveals = document.querySelectorAll('.reveal');
-    const observer = new IntersectionObserver((entries) => {
-      entries.forEach((e, i) => {
-        if (e.isIntersecting) {
-          setTimeout(() => e.target.classList.add('visible'), i * 80);
-        }
-      });
-    }, { threshold: 0.1 });
-    reveals.forEach(el => observer.observe(el));
-
-    // Nav shadow on scroll
-    const nav = document.querySelector('nav');
-    window.addEventListener('scroll', () => {
-      nav.style.boxShadow = window.scrollY > 30
-        ? '0 4px 30px rgba(0,0,0,0.35)'
-        : 'none';
-    });
-  </script>
+</div>
 </body>
 </html>
